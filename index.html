@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>高级字幕系统 - SSE版</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            overflow: hidden;
+            position: relative;
+            background: #00000000;
+        }
+
+        .subtitle-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .subtitle-item {
+            position: absolute;
+            white-space: nowrap;
+            display: inline-block;
+            transform-origin: center;
+        }
+
+        .char {
+            display: inline-block;
+            opacity: 0;
+            transform: scale(0);
+        }
+
+        .typing {
+            animation: subtleShake 2s step-end infinite;
+            will-change: transform;
+        }
+
+        /* @keyframes subtleShake {
+            0% { transform: translateY(0px) translateX(0px) scale(1); }
+            100% { 
+                transform: translateY(var(--shake-y)) translateX(var(--shake-x)) scale(1); 
+            }
+        } */
+        
+        @keyframes subtleShake {
+            0%   { transform: translate(0, 0) scale(1); }
+            6.25%  { transform: translate(calc(var(--shake-x) * 0.7),  calc(var(--shake-y) * -0.2)) scale(1); }
+            12.5%  { transform: translate(calc(var(--shake-x) * -0.4), calc(var(--shake-y) * 0.6))  scale(1); }
+            18.75% { transform: translate(calc(var(--shake-x) * 0.2),  calc(var(--shake-y) * -0.9)) scale(1); }
+            25%    { transform: translate(calc(var(--shake-x) * -0.9), calc(var(--shake-y) * -0.1)) scale(1); }
+            31.25% { transform: translate(calc(var(--shake-x) * 0.5),  calc(var(--shake-y) * 0.8))  scale(1); }
+            37.5%  { transform: translate(calc(var(--shake-x) * -0.1), calc(var(--shake-y) * -0.5)) scale(1); }
+            43.75% { transform: translate(calc(var(--shake-x) * 0.9),  calc(var(--shake-y) * 0.3))  scale(1); }
+            50%    { transform: translate(calc(var(--shake-x) * -0.6), calc(var(--shake-y) * 0.1))  scale(1); }
+            56.25% { transform: translate(calc(var(--shake-x) * 0.1),  calc(var(--shake-y) * 0.9))  scale(1); }
+            62.5%  { transform: translate(calc(var(--shake-x) * -0.3), calc(var(--shake-y) * -0.7)) scale(1); }
+            68.75% { transform: translate(calc(var(--shake-x) * 0.6),  calc(var(--shake-y) * -0.4)) scale(1); }
+            75%    { transform: translate(calc(var(--shake-x) * -0.8), calc(var(--shake-y) * 0.4))  scale(1); }
+            81.25% { transform: translate(calc(var(--shake-x) * 0.3),  calc(var(--shake-y) * -0.1)) scale(1); }
+            87.5%  { transform: translate(calc(var(--shake-x) * -0.2), calc(var(--shake-y) * 0.2))  scale(1); }
+            93.75% { transform: translate(calc(var(--shake-x) * 0.8),  calc(var(--shake-y) * -0.8)) scale(1); }
+            100%   { transform: translate(0, 0) scale(1); }
+        }
+
+        .fade-out {
+            animation: fadeOut var(--fade-duration) forwards !important;
+        }
+
+        @keyframes fadeOut {
+            to { 
+                opacity: 0.0 ;
+                transform: rotate(var(--original-rotation, 0deg)) translateY(var(--move-up-distance, -10px));;
+            }
+        }
+
+        /* 控制面板样式 */
+        .control-panel {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            color: white;
+            z-index: 1000;
+            background: rgba(0,0,0,0.7);
+            padding: 15px;
+            border-radius: 8px;
+            font-family: Arial, sans-serif;
+        }
+
+        .connection-status {
+            margin-bottom: 10px;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .status-connected { background: #4CAF50; }
+        .status-disconnected { background: #f44336; }
+        .status-connecting { background: #ff9800; }
+
+        button {
+            margin: 5px;
+            padding: 8px 15px;
+            border: none;
+            border-radius: 4px;
+            background: #2196F3;
+            color: white;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #1976D2;
+        }
+
+        input, select {
+            margin: 5px;
+            padding: 5px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+
+        /* 开发模式参数面板 */
+        .dev-panel {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            color: white;
+            z-index: 1000;
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            border-radius: 8px;
+            font-family: Arial, sans-serif;
+            min-width: 350px;
+            max-height: 100vh;
+            overflow-y: auto;
+        }
+
+        .param-group {
+            margin: 10px 0;
+        }
+
+        .param-label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .param-input {
+            width: 100%;
+            padding: 5px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+
+        .dev-panel h3 {
+            margin-top: 0;
+            color: #4CAF50;
+        }
+
+        /* 开发模式隐藏/显示 */
+        .dev-only {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="subtitle-container" id="subtitleContainer"></div>
+    
+    <!-- 基础控制面板 -->
+    <div class="control-panel" id="controlPanel">
+        <div id="connectionStatus" class="connection-status status-disconnected">未连接</div>
+        
+        <input type="text" id="sseUrl" placeholder="SSE地址" value="SSE_URL_PLACEHOLDER" class="auto-replace-url">
+        <button onclick="connectSSE()">连接</button>
+        <button onclick="disconnectSSE()">断开</button>
+        
+        <br>
+        
+        <button onclick="addTestSubtitle()">添加测试字幕</button>
+        <button onclick="clearSubtitles()">清空字幕</button>
+        
+        <br>
+        
+        <input type="text" id="customText" placeholder="自定义文字">
+        <button onclick="addCustomSubtitle()">添加自定义</button>
+        
+        <br>
+        
+        <!-- 开发模式开关按钮 -->
+        <button onclick="toggleDevMode()" id="devToggleBtn">进入开发模式</button>
+    </div>
+
+    <!-- 开发模式参数面板 -->
+    <div class="dev-panel dev-only" id="devPanel">
+        <h3>开发模式 - 参数配置</h3>
+        
+        <div class="param-group">
+            <label class="param-label">弹幕文本:</label>
+            <input type="text" id="danmuText" class="param-input" placeholder="输入弹幕内容">
+        </div>
+        
+        <div class="param-group">
+            <label class="param-label">字体大小:</label>
+            <input type="number" id="danmuSize" class="param-input" value="24" min="10" max="100">
+        </div>
+        
+        <div class="param-group">
+            <label class="param-label">字体颜色:</label>
+            <input type="color" id="danmuColor" class="param-input" value="#ffffff">
+        </div>
+        
+        <div class="param-group">
+            <label class="param-label">描边颜色:</label>
+            <input type="color" id="strokeColor" class="param-input" value="#000000">
+        </div>
+        
+        <div class="param-group">
+            <label class="param-label">描边宽度:</label>
+            <input type="number" id="strokeWidth" class="param-input" value="2" min="0" max="10">
+        </div>
+        
+        <div class="param-group">
+            <label class="param-label">打字速度 (ms):</label>
+            <input type="number" id="typingSpeed" class="param-input" value="100" min="10" max="1000">
+        </div>
+        
+        <div class="param-group">
+            <label class="param-label">显示时长 (ms):</label>
+            <input type="number" id="displayDuration" class="param-input" value="3000" min="100" max="10000">
+        </div>
+
+        <div class="param-group">
+            <label class="param-label">消失时长 (ms):</label>
+            <input type="number" id="fadeDuration" class="param-input" value="3000" min="100" max="10000">
+        </div>
+        
+        <div class="param-group">
+            <label class="param-label">抖动幅度:</label>
+            <input type="number" id="shakeAmplitude" class="param-input" value="2" min="0" max="10">
+        </div>
+        
+        <div class="param-group">
+            <label class="param-label">随机倾斜角度:</label>
+            <input type="number" id="randomTilt" class="param-input" value="10" min="0" max="45">
+        </div>
+        
+        <button onclick="sendCustomDanmu()">发送自定义弹幕</button>
+        <button onclick="toggleDevMode()">退出开发模式</button>
+    </div>
+
+    <script>
+        class AdvancedSubtitleSystem {
+            constructor() {
+                this.container = document.getElementById('subtitleContainer');
+                this.activeSubtitles = new Set();
+                this.eventSource = null;
+                
+                this.defaultConfig = {
+                    fontSize: 32,
+                    fontFamily: 'Arial, sans-serif',
+                    textColor: '#ffffff',
+                    strokeColor: '#000000',
+                    strokeWidth: 2,
+                    typingSpeed: 100,
+                    displayDuration: 3000,
+                    fadeDuration: 1000,
+                    shakeAmplitude: 2,
+                    shrinkScale: 0.7,
+                    finalOpacity: 0.3,
+                    randomTilt: 10,
+                    maxLeft: null,
+                    maxTop: null
+                };
+                
+                // 开发模式状态
+                this.devMode = false;
+            }
+
+            addSubtitle(text, customConfig = {}) {
+                const config = { ...this.defaultConfig, ...customConfig };
+                const subtitleElement = this.createSubtitleElement(text, config);
+                
+                const position = this.getRandomPosition(text, config);
+                subtitleElement.style.left = `${position.x}px`;
+                subtitleElement.style.top = `${position.y}px`;
+                
+                const tilt = (Math.random() - 0.5) * config.randomTilt;
+                subtitleElement.style.transform = `rotate(${tilt}deg)`;
+                subtitleElement.style.setProperty('--original-rotation', `${tilt}deg`);
+                
+                this.container.appendChild(subtitleElement);
+                this.activeSubtitles.add(subtitleElement);
+
+                this.startTypingEffect(subtitleElement, text, config);
+                
+                return subtitleElement;
+            }
+
+            createSubtitleElement(text, config) {
+                const element = document.createElement('div');
+                element.className = 'subtitle-item';
+                
+                element.style.fontSize = `${config.fontSize}px`;
+                element.style.fontFamily = config.fontFamily;
+                element.style.color = config.textColor;
+                element.style.textShadow = `
+                    ${config.strokeWidth}px 0 0 ${config.strokeColor},
+                    -${config.strokeWidth}px 0 0 ${config.strokeColor},
+                    0 ${config.strokeWidth}px 0 ${config.strokeColor},
+                    0 -${config.strokeWidth}px 0 ${config.strokeColor},
+                    ${config.strokeWidth}px ${config.strokeWidth}px 0 ${config.strokeColor},
+                    -${config.strokeWidth}px -${config.strokeWidth}px 0 ${config.strokeColor},
+                    ${config.strokeWidth}px -${config.strokeWidth}px 0 ${config.strokeColor},
+                    -${config.strokeWidth}px ${config.strokeWidth}px 0 ${config.strokeColor}
+                `;
+                element.style.opacity = '1';
+                
+                return element;
+            }
+
+            startTypingEffect(element, text, config) {
+                const chars = [];
+                element.innerHTML = '';
+                
+                for (let i = 0; i < text.length; i++) {
+                    const charSpan = document.createElement('span');
+                    charSpan.className = 'char';
+                    charSpan.textContent = text[i];
+                    
+                    // const shakeX = (Math.random() - 0.5) * config.shakeAmplitude;
+                    // const shakeY = (Math.random() - 0.5) * config.shakeAmplitude;
+                    const shakeX = config.shakeAmplitude * 0.25;
+                    const shakeY = config.shakeAmplitude * 0.25;
+                    charSpan.style.setProperty('--shake-x', `${shakeX}px`);
+                    charSpan.style.setProperty('--shake-y', `${shakeY}px`);
+                    
+                    element.appendChild(charSpan);
+                    chars.push(charSpan);
+                }
+
+                let index = 0;
+                
+                const typeNextChar = () => {
+                    if (index < chars.length) {
+                        chars[index].style.opacity = '1';
+                        chars[index].style.transform = 'scale(1)';
+                        chars[index].classList.add('typing');
+                        index++;
+                        setTimeout(typeNextChar, config.typingSpeed);
+                    } else {
+                        setTimeout(() => {
+                            this.startFadeOut(element, config);
+                        }, config.displayDuration);
+                    }
+                };
+
+                typeNextChar();
+            }
+
+            startFadeOut(element, config) {
+                element.style.setProperty('--fade-duration', `${config.fadeDuration}ms`);
+                element.style.setProperty('--final-opacity', config.finalOpacity.toString());
+                element.style.setProperty('--shrink-scale', config.shrinkScale.toString());
+                
+                element.classList.add('fade-out');
+                
+                setTimeout(() => {
+                    element.remove();
+                    this.activeSubtitles.delete(element);
+                }, config.fadeDuration);
+            }
+
+            getRandomPosition(text, config) {
+                const screenWidth = window.innerWidth;
+                const screenHeight = window.innerHeight;
+                
+                const tempDiv = document.createElement('div');
+                tempDiv.style.position = 'absolute';
+                tempDiv.style.visibility = 'hidden';
+                tempDiv.style.fontSize = `${config.fontSize}px`;
+                tempDiv.style.fontFamily = config.fontFamily;
+                tempDiv.textContent = text;
+                document.body.appendChild(tempDiv);
+                
+                const textWidth = tempDiv.offsetWidth;
+                const textHeight = tempDiv.offsetHeight;
+                document.body.removeChild(tempDiv);
+                
+                const maxX = Math.min(screenWidth - textWidth, this.defaultConfig.maxLeft || screenWidth - textWidth);
+                const maxY = Math.min(screenHeight - textHeight, this.defaultConfig.maxTop || screenHeight - textHeight);
+
+                return {
+                    x: Math.max(0, Math.random() * maxX),
+                    y: Math.max(0, Math.random() * maxY)
+                };
+            }
+
+            updateConfig(newConfig) {
+                this.defaultConfig = { ...this.defaultConfig, ...newConfig };
+            }
+
+            clearAll() {
+                this.activeSubtitles.forEach(element => {
+                    element.remove();
+                });
+                this.activeSubtitles.clear();
+            }
+
+            // SSE连接方法
+            connectSSE(url = 'http://localhost:8080/api/sse') {
+                if (this.eventSource) {
+                    this.disconnectSSE();
+                }
+                
+                try {
+                    this.eventSource = new EventSource(url);
+                    
+                    this.eventSource.onopen = () => {
+                        console.log('SSE连接成功');
+                        this.updateConnectionStatus('connected', '已连接');
+                    };
+                    
+                    this.eventSource.onmessage = (event) => {
+                        try {
+                            const data = JSON.parse(event.data);
+                            this.handleSSEMessage(data);
+                        } catch (error) {
+                            console.error('解析SSE消息失败:', error);
+                        }
+                    };
+                    
+                    this.eventSource.onerror = (error) => {
+                        console.error('SSE连接错误:', error);
+                        this.updateConnectionStatus('disconnected', '连接错误');
+                        
+                        // 自动重连
+                        setTimeout(() => {
+                            if (this.eventSource?.readyState === EventSource.CLOSED) {
+                                this.connectSSE(url);
+                            }
+                        }, 3000);
+                    };
+                } catch (error) {
+                    console.error('SSE连接失败:', error);
+                    this.updateConnectionStatus('disconnected', '连接失败');
+                }
+            }
+
+            disconnectSSE() {
+                if (this.eventSource) {
+                    this.eventSource.close();
+                    this.eventSource = null;
+                }
+                this.updateConnectionStatus('disconnected', '已断开');
+            }
+
+            handleSSEMessage(data) {
+                switch (data.type) {
+                    case 'danmu':
+                    case 'subtitle':
+                    case 'text':
+                        this.processDanmuData(data);
+                        break;
+                    case 'config':
+                        this.updateConfig(data.config);
+                        break;
+                    case 'connected':
+                        console.log('SSE连接确认:', data);
+                        break;
+                    case 'heartbeat':
+                        // 心跳消息，保持连接活跃
+                        break;
+                    default:
+                        // 默认处理文本内容
+                        if (data.text) {
+                            this.processDanmuData(data);
+                        }
+                        break;
+                }
+            }
+
+            processDanmuData(data) {
+                const config = {
+                    fontSize: data.size || data.fontSize || this.defaultConfig.fontSize,
+                    fontFamily: data.fontFamily || this.defaultConfig.fontFamily,
+                    textColor: data.color || data.textColor || this.defaultConfig.textColor,
+                    strokeColor: data.strokeColor || this.defaultConfig.strokeColor,
+                    strokeWidth: data.strokeWidth || this.defaultConfig.strokeWidth,
+                    typingSpeed: data.typingSpeed || this.defaultConfig.typingSpeed,
+                    displayDuration: data.displayDuration || this.defaultConfig.displayDuration,
+                    fadeDuration: data.fadeDuration || this.defaultConfig.fadeDuration,
+                    shakeAmplitude: data.shakeAmplitude || this.defaultConfig.shakeAmplitude,
+                    randomTilt: data.randomTilt || this.defaultConfig.randomTilt
+                };
+                
+                this.addSubtitle(data.text || data.content || data.message, config);
+            }
+
+            updateConnectionStatus(status, text) {
+                const statusEl = document.getElementById('connectionStatus');
+                if (statusEl) {
+                    statusEl.className = `connection-status status-${status}`;
+                    statusEl.textContent = text;
+                }
+            }
+
+            // 发送弹幕到后端（通过HTTP POST）
+            async sendDanmuToBackend(danmuData) {
+                try {
+                    const response = await fetch('/api/send-danmu', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(danmuData)
+                    });
+                    
+                    const result = await response.json();
+                    console.log('弹幕发送结果:', result);
+                } catch (error) {
+                    console.error('发送弹幕失败:', error);
+                }
+            }
+
+            // 设置开发模式
+            setDevMode(enabled) {
+                this.devMode = enabled;
+                
+                const controlPanel = document.getElementById('controlPanel')
+                const devPanel = document.getElementById('devPanel');
+                const devToggleBtn = document.getElementById('devToggleBtn');
+                
+                if (enabled) {
+                    controlPanel.style.display = 'block'
+                    devPanel.style.display = 'block';
+                    devToggleBtn.textContent = '退出开发模式';
+                } else {
+                    controlPanel.style.display = 'none'
+                    devPanel.style.display = 'none';
+                    devToggleBtn.textContent = '进入开发模式';
+                }
+            }
+        }
+
+        // 创建全局实例
+        const subtitleSystem = new AdvancedSubtitleSystem();
+
+        // 控制函数
+        function connectSSE() {
+            const url = document.getElementById('sseUrl').value;
+            subtitleSystem.connectSSE(url);
+        }
+
+        function disconnectSSE() {
+            subtitleSystem.disconnectSSE();
+        }
+
+        function addTestSubtitle() {
+            const texts = [
+                'Hello World!',
+                '这是一条测试字幕',
+                'Advanced Subtitle System',
+                '打字机效果演示',
+                '随机倾斜与抖动'
+            ];
+            
+            const randomText = texts[Math.floor(Math.random() * texts.length)];
+            
+            subtitleSystem.addSubtitle(randomText, {
+                fontSize: 24 + Math.random() * 16,
+                textColor: `hsl(${Math.random() * 360}, 70%, 80%)`,
+                strokeColor: `hsl(${Math.random() * 360}, 50%, 30%)`,
+                typingSpeed: 50 + Math.random() * 100,
+                displayDuration: 2000 + Math.random() * 2000,
+                shakeAmplitude: 1 + Math.random() * 3,
+                shrinkScale: 0.5 + Math.random() * 0.3
+            });
+        }
+
+        function addCustomSubtitle() {
+            const text = document.getElementById('customText').value;
+            if (text) {
+                subtitleSystem.addSubtitle(text, {
+                    fontSize: 40,
+                    textColor: '#ffff00',
+                    strokeColor: '#ff0000',
+                    strokeWidth: 3,
+                    fontFamily: 'Microsoft YaHei, Arial, sans-serif',
+                    typingSpeed: 80,
+                    displayDuration: 4000,
+                    fadeDuration: 1500,
+                    shakeAmplitude: 3,
+                    shrinkScale: 0.6,
+                    finalOpacity: 0.2,
+                    randomTilt: 15
+                });
+                document.getElementById('customText').value = '';
+            }
+        }
+
+        function toggleDevMode() {
+            subtitleSystem.setDevMode(!subtitleSystem.devMode);
+        }
+
+        function sendCustomDanmu() {
+            const danmuData = {
+                type: 'danmu',
+                text: document.getElementById('danmuText').value || '自定义弹幕',
+                color: document.getElementById('danmuColor').value,
+                size: parseInt(document.getElementById('danmuSize').value),
+                strokeColor: document.getElementById('strokeColor').value,
+                strokeWidth: parseInt(document.getElementById('strokeWidth').value),
+                typingSpeed: parseInt(document.getElementById('typingSpeed').value),
+                displayDuration: parseInt(document.getElementById('displayDuration').value),
+                fadeDuration: parseInt(document.getElementById('fadeDuration').value),
+                shakeAmplitude: parseFloat(document.getElementById('shakeAmplitude').value),
+                randomTilt: parseFloat(document.getElementById('randomTilt').value),
+                time: Date.now()
+            };
+            
+            if (!danmuData.text) {
+                alert('请输入弹幕文本');
+                return;
+            }
+            
+            // 发送到后端
+            subtitleSystem.sendDanmuToBackend(danmuData);
+        }
+
+        function clearSubtitles() {
+            subtitleSystem.clearAll();
+        }
+
+        // 暴露接口给外部使用
+        window.subtitleSystem = subtitleSystem;
+        window.receiveDanmu = function(data) {
+            subtitleSystem.handleSSEMessage(data);
+        };
+        window.sendToSubtitle = function(data) {
+            subtitleSystem.sendDanmuToBackend(data);
+        };
+
+        // 页面加载完成后自动进入开发模式（可选）
+        window.addEventListener('load', function() {
+            // 可以根据URL参数决定是否自动进入开发模式
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('dev') === 'true') {
+                subtitleSystem.setDevMode(true);
+            }
+            connectSSE()
+        });
+    </script>
+</body>
+</html>
