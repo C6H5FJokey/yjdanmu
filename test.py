@@ -6,9 +6,9 @@ def send_danmu(message):
     data = {
   "type": "danmu",
   "text": message,
-  "color": "#000000",
+  "color": "#ffffff",
   "size": 32,
-  "strokeColor": "#ffffff",
+  "strokeColor": "#000000",
   "strokeWidth": 2,
   "typingSpeed": 100,
   "displayDuration": 2000,

@@ -147,17 +147,6 @@ app.get('/', (req, res) => {
         'SSE_URL_PLACEHOLDER',
         `http://localhost:${PORT}/api/sse`
     );
-    if (isDevelopment) {
-        html = html.replace(
-            'CONTROL_PANEL_DISPLAY',
-            ''
-        )
-    } else {
-        html = html.replace(
-            'CONTROL_PANEL_DISPLAY',
-            'none'
-        )
-    }
     res.send(html);
 });
 

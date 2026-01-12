@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>高级字幕系统 - SSE版</title>
+    <title>弹幕预览 - yjdanmu</title>
     <style>
         body {
             margin: 0;
@@ -41,13 +41,6 @@
             will-change: transform;
         }
 
-        /* @keyframes subtleShake {
-            0% { transform: translateY(0px) translateX(0px) scale(1); }
-            100% { 
-                transform: translateY(var(--shake-y)) translateX(var(--shake-x)) scale(1); 
-            }
-        } */
-        
         @keyframes subtleShake {
             0%   { transform: translate(0, 0) scale(1); }
             6.25%  { transform: translate(calc(var(--shake-x) * 0.7),  calc(var(--shake-y) * -0.2)) scale(1); }
@@ -79,180 +72,34 @@
             }
         }
 
-        /* 控制面板样式 */
-        .control-panel {
+        /* 简单的连接状态指示器 */
+        .connection-indicator {
             position: fixed;
-            bottom: 20px;
-            left: 20px;
-            color: white;
-            z-index: 1000;
-            background: rgba(0,0,0,0.7);
-            padding: 15px;
-            border-radius: 8px;
-            font-family: Arial, sans-serif;
-        }
-
-        .connection-status {
-            margin-bottom: 10px;
-            padding: 5px 10px;
+            top: 10px;
+            right: 10px;
+            padding: 8px 12px;
             border-radius: 4px;
             font-size: 12px;
-        }
-
-        .status-connected { background: #4CAF50; }
-        .status-disconnected { background: #f44336; }
-        .status-connecting { background: #ff9800; }
-
-        button {
-            margin: 5px;
-            padding: 8px 15px;
-            border: none;
-            border-radius: 4px;
-            background: #2196F3;
             color: white;
-            cursor: pointer;
+            z-index: 10000;
         }
 
-        button:hover {
-            background: #1976D2;
+        .connected {
+            background: #4CAF50;
         }
 
-        input, select {
-            margin: 5px;
-            padding: 5px;
-            border-radius: 4px;
-            border: 1px solid #ccc;
+        .disconnected {
+            background: #f44336;
         }
 
-        /* 开发模式参数面板 */
-        .dev-panel {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            color: white;
-            z-index: 1000;
-            background: rgba(0,0,0,0.8);
-            padding: 20px;
-            border-radius: 8px;
-            font-family: Arial, sans-serif;
-            min-width: 350px;
-            max-height: 100vh;
-            overflow-y: auto;
-        }
-
-        .param-group {
-            margin: 10px 0;
-        }
-
-        .param-label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
-        }
-
-        .param-input {
-            width: 100%;
-            padding: 5px;
-            border-radius: 4px;
-            border: 1px solid #ccc;
-        }
-
-        .dev-panel h3 {
-            margin-top: 0;
-            color: #4CAF50;
-        }
-
-        /* 开发模式隐藏/显示 */
-        .dev-only {
-            display: none;
+        .connecting {
+            background: #ff9800;
         }
     </style>
 </head>
 <body>
     <div class="subtitle-container" id="subtitleContainer"></div>
     
-    <!-- 基础控制面板 -->
-    <div class="control-panel dev-only" id="controlPanel">
-        <div id="connectionStatus" class="connection-status status-disconnected">未连接</div>
-        
-        <input type="text" id="sseUrl" placeholder="SSE地址" value="SSE_URL_PLACEHOLDER" class="auto-replace-url">
-        <button onclick="connectSSE()">连接</button>
-        <button onclick="disconnectSSE()">断开</button>
-        
-        <br>
-        
-        <button onclick="addTestSubtitle()">添加测试字幕</button>
-        <button onclick="clearSubtitles()">清空字幕</button>
-        
-        <br>
-        
-        <input type="text" id="customText" placeholder="自定义文字">
-        <button onclick="addCustomSubtitle()">添加自定义</button>
-        
-        <br>
-        
-        <!-- 开发模式开关按钮 -->
-        <button onclick="toggleDevMode()" id="devToggleBtn">进入开发模式</button>
-    </div>
-
-    <!-- 开发模式参数面板 -->
-    <div class="dev-panel dev-only" id="devPanel">
-        <h3>开发模式 - 参数配置</h3>
-        
-        <div class="param-group">
-            <label class="param-label">弹幕文本:</label>
-            <input type="text" id="danmuText" class="param-input" placeholder="输入弹幕内容">
-        </div>
-        
-        <div class="param-group">
-            <label class="param-label">字体大小:</label>
-            <input type="number" id="danmuSize" class="param-input" value="24" min="10" max="100">
-        </div>
-        
-        <div class="param-group">
-            <label class="param-label">字体颜色:</label>
-            <input type="color" id="danmuColor" class="param-input" value="#ffffff">
-        </div>
-        
-        <div class="param-group">
-            <label class="param-label">描边颜色:</label>
-            <input type="color" id="strokeColor" class="param-input" value="#000000">
-        </div>
-        
-        <div class="param-group">
-            <label class="param-label">描边宽度:</label>
-            <input type="number" id="strokeWidth" class="param-input" value="2" min="0" max="10">
-        </div>
-        
-        <div class="param-group">
-            <label class="param-label">打字速度 (ms):</label>
-            <input type="number" id="typingSpeed" class="param-input" value="100" min="10" max="1000">
-        </div>
-        
-        <div class="param-group">
-            <label class="param-label">显示时长 (ms):</label>
-            <input type="number" id="displayDuration" class="param-input" value="3000" min="100" max="10000">
-        </div>
-
-        <div class="param-group">
-            <label class="param-label">消失时长 (ms):</label>
-            <input type="number" id="fadeDuration" class="param-input" value="3000" min="100" max="10000">
-        </div>
-        
-        <div class="param-group">
-            <label class="param-label">抖动幅度:</label>
-            <input type="number" id="shakeAmplitude" class="param-input" value="2" min="0" max="10">
-        </div>
-        
-        <div class="param-group">
-            <label class="param-label">随机倾斜角度:</label>
-            <input type="number" id="randomTilt" class="param-input" value="10" min="0" max="45">
-        </div>
-        
-        <button onclick="sendCustomDanmu()">发送自定义弹幕</button>
-        <button onclick="toggleDevMode()">退出开发模式</button>
-    </div>
-
     <script>
         class AdvancedSubtitleSystem {
             constructor() {
@@ -276,13 +123,13 @@
                     maxLeft: null,
                     maxTop: null
                 };
-                
-                // 开发模式状态
-                this.devMode = false;
             }
 
             addSubtitle(text, customConfig = {}) {
                 const config = { ...this.defaultConfig, ...customConfig };
+                console.log('addSubtitle - config:', config);
+                console.log('addSubtitle - config.fontSize:', config.fontSize);
+                
                 const subtitleElement = this.createSubtitleElement(text, config);
                 
                 const position = this.getRandomPosition(text, config);
@@ -302,10 +149,15 @@
             }
 
             createSubtitleElement(text, config) {
+                console.log('createSubtitleElement - config:', config);
+                console.log('createSubtitleElement - config.fontSize:', config.fontSize);
+                
                 const element = document.createElement('div');
                 element.className = 'subtitle-item';
                 
                 element.style.fontSize = `${config.fontSize}px`;
+                console.log('createSubtitleElement - element.style.fontSize:', element.style.fontSize);
+                
                 element.style.fontFamily = config.fontFamily;
                 element.style.color = config.textColor;
                 
@@ -341,8 +193,6 @@
                     charSpan.className = 'char';
                     charSpan.textContent = text[i];
                     
-                    // const shakeX = (Math.random() - 0.5) * config.shakeAmplitude;
-                    // const shakeY = (Math.random() - 0.5) * config.shakeAmplitude;
                     const shakeX = config.shakeAmplitude * 0.25;
                     const shakeY = config.shakeAmplitude * 0.25;
                     charSpan.style.setProperty('--shake-x', `${shakeX}px`);
@@ -410,7 +260,14 @@
             }
 
             updateConfig(newConfig) {
+                console.log('Updating config:', newConfig);
+                console.log('Old defaultConfig:', this.defaultConfig);
+                console.log('Old defaultConfig fontSize:', this.defaultConfig.fontSize);
+                
                 this.defaultConfig = { ...this.defaultConfig, ...newConfig };
+                
+                console.log('New defaultConfig:', this.defaultConfig);
+                console.log('New defaultConfig fontSize:', this.defaultConfig.fontSize);
             }
 
             clearAll() {
@@ -421,7 +278,7 @@
             }
 
             // SSE连接方法
-            connectSSE(url = 'http://localhost:8080/api/sse') {
+            connectSSE(url = 'http://127.0.0.1:8081/api/sse') {
                 if (this.eventSource) {
                     this.disconnectSSE();
                 }
@@ -431,7 +288,6 @@
                     
                     this.eventSource.onopen = () => {
                         console.log('SSE连接成功');
-                        this.updateConnectionStatus('connected', '已连接');
                     };
                     
                     this.eventSource.onmessage = (event) => {
@@ -445,7 +301,6 @@
                     
                     this.eventSource.onerror = (error) => {
                         console.error('SSE连接错误:', error);
-                        this.updateConnectionStatus('disconnected', '连接错误');
                         
                         // 自动重连
                         setTimeout(() => {
@@ -456,7 +311,6 @@
                     };
                 } catch (error) {
                     console.error('SSE连接失败:', error);
-                    this.updateConnectionStatus('disconnected', '连接失败');
                 }
             }
 
@@ -465,7 +319,15 @@
                     this.eventSource.close();
                     this.eventSource = null;
                 }
-                this.updateConnectionStatus('disconnected', '已断开');
+            }
+
+            // 强制断开连接的方法
+            forceDisconnectSSE() {
+                if (this.eventSource) {
+                    this.eventSource.close();
+                    this.eventSource = null;
+                }
+                // 清理 all timers and event listeners
             }
 
             handleSSEMessage(data) {
@@ -478,11 +340,8 @@
                     case 'config':
                         this.updateConfig(data.config);
                         break;
-                    case 'connected':
-                        console.log('SSE连接确认:', data);
-                        break;
-                    case 'heartbeat':
-                        // 心跳消息，保持连接活跃
+                    case 'ping':
+                        // Ping message for connection health
                         break;
                     default:
                         // 默认处理文本内容
@@ -494,8 +353,14 @@
             }
 
             processDanmuData(data) {
+                console.log('Processing danmu data:', data);
+                console.log('Current defaultConfig:', this.defaultConfig);
+                console.log('defaultConfig.fontSize:', this.defaultConfig.fontSize);
+                console.log('data.fontSize:', data.fontSize);
+                console.log('data.size:', data.size);
+                
                 const config = {
-                    fontSize: data.size || data.fontSize || this.defaultConfig.fontSize,
+                    fontSize: data.fontSize || data.size || this.defaultConfig.fontSize,
                     fontFamily: data.fontFamily || this.defaultConfig.fontFamily,
                     textColor: data.color || data.textColor || this.defaultConfig.textColor,
                     strokeColor: data.strokeColor || this.defaultConfig.strokeColor,
@@ -507,162 +372,52 @@
                     randomTilt: data.randomTilt || this.defaultConfig.randomTilt
                 };
                 
+                console.log('Final config used:', config);
+                console.log('Final config.fontSize:', config.fontSize);
+                
                 this.addSubtitle(data.text || data.content || data.message, config);
-            }
-
-            updateConnectionStatus(status, text) {
-                const statusEl = document.getElementById('connectionStatus');
-                if (statusEl) {
-                    statusEl.className = `connection-status status-${status}`;
-                    statusEl.textContent = text;
-                }
-            }
-
-            // 发送弹幕到后端（通过HTTP POST）
-            async sendDanmuToBackend(danmuData) {
-                try {
-                    const response = await fetch('/api/send-danmu', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify(danmuData)
-                    });
-                    
-                    const result = await response.json();
-                    console.log('弹幕发送结果:', result);
-                } catch (error) {
-                    console.error('发送弹幕失败:', error);
-                }
-            }
-
-            // 设置开发模式
-            setDevMode(enabled) {
-                this.devMode = enabled;
-                
-                const controlPanel = document.getElementById('controlPanel')
-                const devPanel = document.getElementById('devPanel');
-                const devToggleBtn = document.getElementById('devToggleBtn');
-                
-                if (enabled) {
-                    controlPanel.style.display = 'block'
-                    devPanel.style.display = 'block';
-                    devToggleBtn.textContent = '退出开发模式';
-                } else {
-                    controlPanel.style.display = 'none'
-                    devPanel.style.display = 'none';
-                    devToggleBtn.textContent = '进入开发模式';
-                }
             }
         }
 
         // 创建全局实例
         const subtitleSystem = new AdvancedSubtitleSystem();
 
-        // 控制函数
-        function connectSSE() {
-            const url = document.getElementById('sseUrl').value;
-            subtitleSystem.connectSSE(url);
-        }
-
-        function disconnectSSE() {
-            subtitleSystem.disconnectSSE();
-        }
-
-        function addTestSubtitle() {
-            const texts = [
-                'Hello World!',
-                '这是一条测试字幕',
-                'Advanced Subtitle System',
-                '打字机效果演示',
-                '随机倾斜与抖动'
-            ];
-            
-            const randomText = texts[Math.floor(Math.random() * texts.length)];
-            
-            subtitleSystem.addSubtitle(randomText, {
-                fontSize: 24 + Math.random() * 16,
-                textColor: `hsl(${Math.random() * 360}, 70%, 80%)`,
-                strokeColor: `hsl(${Math.random() * 360}, 50%, 30%)`,
-                typingSpeed: 50 + Math.random() * 100,
-                displayDuration: 2000 + Math.random() * 2000,
-                shakeAmplitude: 1 + Math.random() * 3,
-                shrinkScale: 0.5 + Math.random() * 0.3
-            });
-        }
-
-        function addCustomSubtitle() {
-            const text = document.getElementById('customText').value;
-            if (text) {
-                subtitleSystem.addSubtitle(text, {
-                    fontSize: 40,
-                    textColor: '#ffff00',
-                    strokeColor: '#ff0000',
-                    strokeWidth: 3,
-                    fontFamily: 'Microsoft YaHei, Arial, sans-serif',
-                    typingSpeed: 80,
-                    displayDuration: 4000,
-                    fadeDuration: 1500,
-                    shakeAmplitude: 3,
-                    shrinkScale: 0.6,
-                    finalOpacity: 0.2,
-                    randomTilt: 15
-                });
-                document.getElementById('customText').value = '';
+        // 页面加载完成后自动连接SSE
+        window.addEventListener('load', function() {
+            subtitleSystem.connectSSE('http://127.0.0.1:8081/api/sse');
+        });
+        
+        // 页面卸载前断开SSE连接
+        window.addEventListener('beforeunload', function() {
+            if (subtitleSystem && subtitleSystem.forceDisconnectSSE) {
+                subtitleSystem.forceDisconnectSSE();
             }
-        }
-
-        function toggleDevMode() {
-            subtitleSystem.setDevMode(!subtitleSystem.devMode);
-        }
-
-        function sendCustomDanmu() {
-            const danmuData = {
-                type: 'danmu',
-                text: document.getElementById('danmuText').value || '自定义弹幕',
-                color: document.getElementById('danmuColor').value,
-                size: parseInt(document.getElementById('danmuSize').value),
-                strokeColor: document.getElementById('strokeColor').value,
-                strokeWidth: parseInt(document.getElementById('strokeWidth').value),
-                typingSpeed: parseInt(document.getElementById('typingSpeed').value),
-                displayDuration: parseInt(document.getElementById('displayDuration').value),
-                fadeDuration: parseInt(document.getElementById('fadeDuration').value),
-                shakeAmplitude: parseFloat(document.getElementById('shakeAmplitude').value),
-                randomTilt: parseFloat(document.getElementById('randomTilt').value),
-                time: Date.now()
-            };
-            
-            if (!danmuData.text) {
-                alert('请输入弹幕文本');
-                return;
+        });
+        
+        // 页面隐藏时不要断开连接，而是保持连接
+        window.addEventListener('pagehide', function() {
+            // 在页面隐藏时保持SSE连接，让浏览器处理后台连接
+            console.log('页面隐藏，保持SSE连接');
+        });
+        
+        // 页面可见性变化时处理连接
+        document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'hidden') {
+                // 页面进入后台时，保持连接，不主动断开
+                console.log('页面进入后台，保持SSE连接');
+            } else if (document.visibilityState === 'visible' && subtitleSystem) {
+                // 页面回到前台时，检查连接状态，如果断开则重新连接
+                if (!subtitleSystem.eventSource || subtitleSystem.eventSource.readyState === EventSource.CLOSED) {
+                    console.log('页面回到前台，重新连接SSE');
+                    subtitleSystem.connectSSE('http://127.0.0.1:8081/api/sse');
+                } else {
+                    console.log('页面回到前台，SSE连接正常');
+                }
             }
-            
-            // 发送到后端
-            subtitleSystem.sendDanmuToBackend(danmuData);
-        }
-
-        function clearSubtitles() {
-            subtitleSystem.clearAll();
-        }
+        });
 
         // 暴露接口给外部使用
         window.subtitleSystem = subtitleSystem;
-        window.receiveDanmu = function(data) {
-            subtitleSystem.handleSSEMessage(data);
-        };
-        window.sendToSubtitle = function(data) {
-            subtitleSystem.sendDanmuToBackend(data);
-        };
-
-        // 页面加载完成后自动进入开发模式（可选）
-        window.addEventListener('load', function() {
-            // 可以根据URL参数决定是否自动进入开发模式
-            const urlParams = new URLSearchParams(window.location.search);
-            if (urlParams.get('dev') === 'true') {
-                subtitleSystem.setDevMode(true);
-            }
-            connectSSE()
-        });
     </script>
 </body>
 </html>

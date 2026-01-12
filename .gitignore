@@ -1,2 +1,47 @@
+# Dependencies
 node_modules/
 package-lock.json
+
+# Rust
+target/
+Cargo.lock
+
+# Frontend build
+dist/
+.vite/
+*.log
+
+# Tauri
+tauri-app/src-tauri/target/
+tauri-app/src-tauri/Cargo.lock
+tauri-app/src-tauri/gen/
+tauri-app/src-tauri/icons/
+tauri-app/src-tauri/capabilities/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
