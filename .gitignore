@@ -14,9 +14,6 @@ dist/
 # Tauri
 tauri-app/src-tauri/target/
 tauri-app/src-tauri/Cargo.lock
-tauri-app/src-tauri/gen/
-tauri-app/src-tauri/icons/
-tauri-app/src-tauri/capabilities/
 
 # IDE
 .vscode/
