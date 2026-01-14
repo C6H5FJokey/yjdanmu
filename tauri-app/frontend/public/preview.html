@@ -279,7 +279,7 @@
             }
 
             // SSE连接方法
-            connectSSE(url = 'http://127.0.0.1:8081/api/sse') {
+            connectSSE(url = '/api/sse') {
                 if (this.eventSource) {
                     this.disconnectSSE();
                 }
@@ -385,7 +385,7 @@
 
         // 页面加载完成后自动连接SSE
         window.addEventListener('load', function() {
-            subtitleSystem.connectSSE('http://127.0.0.1:8081/api/sse');
+            subtitleSystem.connectSSE('/api/sse');
         });
         
         // 页面卸载前断开SSE连接
@@ -410,7 +410,7 @@
                 // 页面回到前台时，检查连接状态，如果断开则重新连接
                 if (!subtitleSystem.eventSource || subtitleSystem.eventSource.readyState === EventSource.CLOSED) {
                     console.log('页面回到前台，重新连接SSE');
-                    subtitleSystem.connectSSE('http://127.0.0.1:8081/api/sse');
+                    subtitleSystem.connectSSE('/api/sse');
                 } else {
                     console.log('页面回到前台，SSE连接正常');
                 }

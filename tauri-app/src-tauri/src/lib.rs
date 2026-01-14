@@ -119,8 +119,6 @@ async fn send_danmu(text: String, custom_data: Option<serde_json::Value>) -> Res
         let json_data = serde_json::to_value(danmu_data)
             .map_err(|e| format!("序列化弹幕数据失败: {}", e))?;
         
-        // 在控制台打印发送的弹幕信息
-        println!("[弹幕] {}", serde_json::to_string_pretty(&json_data).unwrap_or_default());
         sse_server::send_to_all_connections(state, json_data).await;
         
         // 更新统计

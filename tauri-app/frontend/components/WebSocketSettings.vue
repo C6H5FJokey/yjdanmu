@@ -20,11 +20,11 @@
         <el-form :model="connectionConfig" label-width="120px">
           <el-form-item label="连接类型">
             <el-radio-group v-model="connectionConfig.roomKeyType">
-              <el-radio label="ROOM_ID">房间ID</el-radio>
-              <el-radio label="AUTH_CODE">用户码</el-radio>
+              <el-radio label="RoomId">房间ID</el-radio>
+              <el-radio label="AuthCode">用户码</el-radio>
             </el-radio-group>
           </el-form-item>
-          <el-form-item :label="connectionConfig.roomKeyType === 'ROOM_ID' ? '房间ID' : '用户码'">
+          <el-form-item :label="connectionConfig.roomKeyType === 'RoomId' ? '房间ID' : '用户码'">
             <el-input 
               v-model="connectionConfig.roomKey" 
               placeholder="请输入房间ID或用户码"
@@ -32,7 +32,7 @@
           </el-form-item>
 
           <!-- OpenLive 凭据（仅用户码模式需要） -->
-          <template v-if="connectionConfig.roomKeyType === 'AUTH_CODE'">
+          <template v-if="connectionConfig.roomKeyType === 'AuthCode'">
             <el-form-item label="OpenLive App ID">
               <el-input
                 v-model="connectionConfig.openLiveAppId"
@@ -120,7 +120,7 @@ let unlisten = null
 
 const connectionConfig = reactive({
   roomKey: '',
-  roomKeyType: "AUTH_CODE",
+  roomKeyType: "RoomId",
   reconnectInterval: 3000,
   maxReconnectAttempts: 5,
   openLiveAppId: '',

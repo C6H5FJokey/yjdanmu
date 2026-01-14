@@ -4,7 +4,7 @@ use app_lib::bili_websocket_client::{self, RoomKeyType};
 
 fn usage() {
     eprintln!(
-        "Usage:\n  ws_debug roomid <ROOM_ID>\n  ws_debug authcode <AUTH_CODE>\n\nEnv:\n  BILI_WS_DEBUG=1   enable verbose ws logs\n  BILI_OPEN_LIVE_APP_ID / BILI_OPEN_LIVE_ACCESS_KEY_ID / BILI_OPEN_LIVE_ACCESS_KEY_SECRET (for authcode)\n"
+        "Usage:\n  ws_debug roomid <RoomId>\n  ws_debug authcode <AuthCode>\n\nEnv:\n  BILI_WS_DEBUG=1   enable verbose ws logs\n  BILI_OPEN_LIVE_APP_ID / BILI_OPEN_LIVE_ACCESS_KEY_ID / BILI_OPEN_LIVE_ACCESS_KEY_SECRET (for authcode)\n"
     );
 }
 
@@ -20,8 +20,8 @@ async fn main() {
     let key = args.remove(0);
 
     let room_key_type = match mode.as_str() {
-        "roomid" | "room_id" => RoomKeyType::ROOM_ID,
-        "authcode" | "auth_code" => RoomKeyType::AUTH_CODE,
+        "roomid" | "room_id" => RoomKeyType::RoomId,
+        "authcode" | "auth_code" => RoomKeyType::AuthCode,
         _ => {
             usage();
             std::process::exit(2);

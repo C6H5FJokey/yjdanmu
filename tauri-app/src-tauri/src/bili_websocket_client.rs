@@ -29,7 +29,7 @@ fn rgb_decimal_to_hex(v: u64) -> String {
     format!("#{:06x}", (v & 0x00ff_ffff))
 }
 
-fn make_sse_danmu(text: String, user: Option<String>, color: Option<String>, size: Option<u32>) -> serde_json::Value {
+fn make_sse_danmu(text: String, user: Option<String>, color: Option<String>, size: Option<u32>, face_url: Option<String>, media_ruid: Option<String>) -> serde_json::Value {
     serde_json::json!({
         "type": "danmu",
         "text": text,
@@ -38,6 +38,8 @@ fn make_sse_danmu(text: String, user: Option<String>, color: Option<String>, siz
         "size": size.unwrap_or(32),
         "time": now_ms(),
         "timestamp": now_hms(),
+        "face_url": face_url,
+        "media_ruid": media_ruid,
     })
 }
 
@@ -46,6 +48,16 @@ fn parse_danmu_msg(root: &serde_json::Value) -> Option<serde_json::Value> {
     let text = root.pointer("/info/1")?.as_str()?.to_string();
     let user = root
         .pointer("/info/2/1")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let face_url = root
+        .pointer("/info/2/0")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let media_ruid = root
+        .pointer("/info/3/12")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
@@ -59,7 +71,7 @@ fn parse_danmu_msg(root: &serde_json::Value) -> Option<serde_json::Value> {
         .and_then(|v| v.as_u64())
         .and_then(|v| u32::try_from(v).ok());
 
-    Some(make_sse_danmu(text, user, color, size))
+    Some(make_sse_danmu(text, user, color, size, face_url, media_ruid))
 }
 
 fn parse_open_live_danmaku(root: &serde_json::Value) -> Option<serde_json::Value> {
@@ -70,7 +82,7 @@ fn parse_open_live_danmaku(root: &serde_json::Value) -> Option<serde_json::Value
         .get("uname")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    Some(make_sse_danmu(text, user, None, None))
+    Some(make_sse_danmu(text, user, None, None, None, None))
 }
 
 fn parse_open_live_gift(root: &serde_json::Value) -> Option<serde_json::Value> {
@@ -83,7 +95,7 @@ fn parse_open_live_gift(root: &serde_json::Value) -> Option<serde_json::Value> {
     let gift_name = data.get("gift_name").and_then(|v| v.as_str()).unwrap_or("礼物");
     let gift_num = data.get("gift_num").and_then(|v| v.as_u64()).unwrap_or(1);
     let text = format!("送出 {gift_name} x{gift_num}");
-    Some(make_sse_danmu(text, user, None, None))
+    Some(make_sse_danmu(text, user, None, None, None, None))
 }
 
 fn parse_open_live_super_chat(root: &serde_json::Value) -> Option<serde_json::Value> {
@@ -103,7 +115,7 @@ fn parse_open_live_super_chat(root: &serde_json::Value) -> Option<serde_json::Va
     } else {
         format!("醒目留言：{message}")
     };
-    Some(make_sse_danmu(text, user, None, None))
+    Some(make_sse_danmu(text, user, None, None, None, None))
 }
 
 const BILI_BROADCAST_WS: &str = "wss://broadcastlv.chat.bilibili.com/sub";
@@ -126,8 +138,8 @@ const OP_AUTH_REPLY: u32 = 8;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum RoomKeyType {
-    ROOM_ID,   // 公屏房间直连
-    AUTH_CODE, // 开放平台用户码
+    RoomId,   // 公屏房间直连
+    AuthCode, // 开放平台用户码
 }
 
 #[derive(Debug, Default)]
@@ -600,7 +612,7 @@ async fn run_ws_loop(
         }
 
         let ws_result = match room_key_type {
-            RoomKeyType::ROOM_ID => {
+            RoomKeyType::RoomId => {
                 let tmp_room_id: i64 = match room_key.parse() {
                     Ok(id) => id,
                     Err(_) => {
@@ -615,7 +627,7 @@ async fn run_ws_loop(
                     .await
                     .map(|(ws, resp)| (ws, resp, Some(info), None))
             }
-            RoomKeyType::AUTH_CODE => match start_game_and_get_ws(
+            RoomKeyType::AuthCode => match start_game_and_get_ws(
                 &room_key,
                 open_live_app_id,
                 open_live_access_key_id.clone(),
@@ -642,7 +654,7 @@ async fn run_ws_loop(
 
                 // 鉴权
                 match room_key_type {
-                    RoomKeyType::ROOM_ID => {
+                    RoomKeyType::RoomId => {
                         let info = maybe_room_info.expect("房间连接信息缺失");
                         let mut auth_body = serde_json::json!({
                             "uid": 0,
@@ -667,7 +679,7 @@ async fn run_ws_loop(
                         }
                         let _ = write.send(msg).await;
                     }
-                    RoomKeyType::AUTH_CODE => {
+                    RoomKeyType::AuthCode => {
                         if let Some(auth_body) = maybe_auth_body.clone() {
                             let msg = make_packet(auth_body.into_bytes(), OP_AUTH, PROTO_VER_CLIENT);
                             if let Message::Binary(b) = &msg {
@@ -843,7 +855,14 @@ async fn handle_command_text(text: &str) {
             // 公屏 DANMU_MSG，开放平台 OPEN_LIVE_* 事件
             match cmd {
                 "DANMU_MSG" => {
+                    // println!("[WebSocket] 弹幕原始信息 {}", serde_json::to_string_pretty(&val).unwrap_or_default());
                     if let Some(msg) = parse_danmu_msg(&val) {
+                        println!("[WebSocket] 弹幕解析结果 {}", serde_json::to_string_pretty(&msg).unwrap_or_default());
+                        // TODO 
+                        // 添加弹幕过滤，配置由前端负责
+                        // 设计为免登陆，所以在连接时会通过房间号获得当前用户id，通过用户id能获取face_url
+                        // 如果不登录不会显示发送弹幕者的id和用户名，但是会给出face_url，可以靠这个来判断是否是自己的弹幕，并根据配置过滤
+                        // 还能通过media_ruid来判断是否为佩戴自己粉丝牌发送的弹幕
                         forward_to_sse(msg).await;
                     }
                 }

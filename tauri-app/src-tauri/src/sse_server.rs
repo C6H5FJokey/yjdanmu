@@ -279,7 +279,7 @@ pub async fn send_danmu_handler(
         .unwrap()
         .as_millis() as u64;
     danmu_data.timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
-    
+
     // 发送到所有连接
     send_to_all_connections(&state, serde_json::to_value(danmu_data).unwrap()).await;
     
@@ -349,6 +349,7 @@ pub async fn update_config_handler(
 
 // 内部函数：发送消息到所有连接
 pub async fn send_to_all_connections(state: &Arc<AppState>, msg: serde_json::Value) {
+    println!("[弹幕] {}", serde_json::to_string_pretty(&msg).unwrap_or_default());
     let connections = state.sse_connections.read().await;
     let connection_ids: Vec<String> = connections.keys().cloned().collect();
     
