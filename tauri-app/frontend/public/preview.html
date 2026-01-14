@@ -34,6 +34,7 @@
             display: inline-block;
             opacity: 0;
             transform: scale(0);
+            white-space: pre;
         }
 
         .typing {
@@ -363,13 +364,13 @@
                     fontSize: data.fontSize || data.size || this.defaultConfig.fontSize,
                     fontFamily: data.fontFamily || this.defaultConfig.fontFamily,
                     textColor: data.color || data.textColor || this.defaultConfig.textColor,
-                    strokeColor: data.strokeColor || this.defaultConfig.strokeColor,
-                    strokeWidth: data.strokeWidth || this.defaultConfig.strokeWidth,
-                    typingSpeed: data.typingSpeed || this.defaultConfig.typingSpeed,
-                    displayDuration: data.displayDuration || this.defaultConfig.displayDuration,
-                    fadeDuration: data.fadeDuration || this.defaultConfig.fadeDuration,
-                    shakeAmplitude: data.shakeAmplitude || this.defaultConfig.shakeAmplitude,
-                    randomTilt: data.randomTilt || this.defaultConfig.randomTilt
+                    strokeColor: data.strokeColor || data.stroke_color || this.defaultConfig.strokeColor,
+                    strokeWidth: data.strokeWidth || data.stroke_width || this.defaultConfig.strokeWidth,
+                    typingSpeed: data.typingSpeed || data.typing_speed || this.defaultConfig.typingSpeed,
+                    displayDuration: data.displayDuration || data.display_duration || this.defaultConfig.displayDuration,
+                    fadeDuration: data.fadeDuration || data.fade_duration || this.defaultConfig.fadeDuration,
+                    shakeAmplitude: data.shakeAmplitude || data.shake_amplitude || this.defaultConfig.shakeAmplitude,
+                    randomTilt: data.randomTilt || data.random_tilt || this.defaultConfig.randomTilt
                 };
                 
                 console.log('Final config used:', config);

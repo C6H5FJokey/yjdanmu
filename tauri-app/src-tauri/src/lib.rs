@@ -1,8 +1,10 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::task;
+use tauri::Manager;
 
 mod sse_server;
+pub mod bili_websocket_client;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -29,7 +31,10 @@ pub fn run() {
             send_danmu,
             send_config,
             get_status,
-            open_in_browser
+            open_in_browser,
+            toggle_always_on_top,
+            connect_websocket,
+            disconnect_websocket
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -114,6 +119,8 @@ async fn send_danmu(text: String, custom_data: Option<serde_json::Value>) -> Res
         let json_data = serde_json::to_value(danmu_data)
             .map_err(|e| format!("序列化弹幕数据失败: {}", e))?;
         
+        // 在控制台打印发送的弹幕信息
+        println!("[弹幕] {}", serde_json::to_string_pretty(&json_data).unwrap_or_default());
         sse_server::send_to_all_connections(state, json_data).await;
         
         // 更新统计
@@ -178,4 +185,42 @@ async fn open_in_browser(url: String) -> Result<String, String> {
     webbrowser::open(&url)
         .map_err(|e| format!("打开浏览器失败: {}", e))?;
     Ok("已在浏览器中打开".to_string())
+}
+
+#[tauri::command]
+async fn toggle_always_on_top(window: tauri::Window) -> Result<bool, String> {
+    let current = window.is_always_on_top().map_err(|e| format!("获取窗口状态失败: {}", e))?;
+    window.set_always_on_top(!current).map_err(|e| format!("设置窗口置顶失败: {}", e))?;
+    Ok(!current)
+}
+
+#[tauri::command]
+async fn connect_websocket(
+    window: tauri::Window,
+    room_key: String,
+    room_key_type: bili_websocket_client::RoomKeyType,
+    reconnect_interval: u64,
+    max_reconnect_attempts: u32,
+    open_live_app_id: Option<i64>,
+    open_live_access_key_id: Option<String>,
+    open_live_access_key_secret: Option<String>,
+) -> Result<String, String> {
+    let app_handle = window.app_handle();
+    bili_websocket_client::connect_websocket(
+        app_handle.clone(),
+        room_key,
+        room_key_type,
+        reconnect_interval,
+        max_reconnect_attempts,
+        open_live_app_id,
+        open_live_access_key_id,
+        open_live_access_key_secret,
+    )
+    .await
+    .map(|_| "WebSocket连接成功".to_string())
+}
+
+#[tauri::command]
+async fn disconnect_websocket() -> Result<String, String> {
+    bili_websocket_client::disconnect_websocket().await.map(|_| "WebSocket断开成功".to_string())
 }

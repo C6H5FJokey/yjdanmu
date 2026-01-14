@@ -18,6 +18,18 @@
         >
           检查服务状态
         </el-button>
+        <el-button 
+          @click="openPreviewInBrowser" 
+          type="primary"
+        >
+          打开预览页面
+        </el-button>
+        <el-button 
+          @click="toggleAlwaysOnTop" 
+          :type="isAlwaysOnTop ? 'success' : 'default'"
+        >
+          {{ isAlwaysOnTop ? '取消置顶' : '窗口置顶' }}
+        </el-button>
       </div>
       
       <!-- 发送弹幕区域 -->
@@ -131,6 +143,7 @@ import { ElMessage } from 'element-plus'
 const tauriAPI = typeof window !== 'undefined' && window.__TAURI_INTERNALS__ ? window.__TAURI_INTERNALS__.invoke : null;
 
 const danmuText = ref('')
+const isAlwaysOnTop = ref(false)
 
 // 样式设置
 const styleSettings = reactive({
@@ -254,24 +267,25 @@ const applyStyleSettings = async () => {
   }
 }
 
-// 组件挂载后自动打开预览页面
-import { onMounted } from 'vue'
-onMounted(() => {
-  // 延迟打开预览页面，确保SSE服务器已启动
-  setTimeout(() => {
-    openPreviewInBrowser()
-  }, 2000)
-})
-
+// 切换窗口置顶
+const toggleAlwaysOnTop = async () => {
+  try {
+    if (tauriAPI) {
+      const result = await tauriAPI('toggle_always_on_top')
+      isAlwaysOnTop.value = result
+      ElMessage.success(result ? '窗口已置顶' : '已取消置顶')
+    } else {
+      ElMessage.info('此功能仅在Tauri环境中可用')
+    }
+  } catch (error) {
+    console.error('切换置顶状态失败:', error)
+    ElMessage.error('切换置顶状态失败')
+  }
+}
 
 </script>
 
 <style scoped>
-.control-panel {
-  padding: 20px;
-  height: 100%;
-  overflow-y: auto;
-}
 
 .control-card {
   min-height: 100%;

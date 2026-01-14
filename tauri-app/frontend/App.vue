@@ -1,18 +1,30 @@
 <template>
   <div id="app">
     <el-container class="layout-container">
-      <el-header class="header">
-        <h1>弹幕控制系统</h1>
-      </el-header>
       <el-main class="main-content">
-        <ControlPanel />
+        <el-tabs v-model="activeTab" class="main-tabs">
+          <el-tab-pane label="控制面板" name="control">
+            <ControlPanel />
+          </el-tab-pane>
+          <el-tab-pane label="WebSocket设置" name="websocket">
+            <WebSocketSettings />
+          </el-tab-pane>
+          <el-tab-pane label="远程样式设置" name="remote-style">
+            <RemoteStyleSettings />
+          </el-tab-pane>
+        </el-tabs>
       </el-main>
     </el-container>
   </div>
 </template>
 
 <script setup>
+import { ref } from 'vue'
 import ControlPanel from './components/ControlPanel.vue'
+import WebSocketSettings from './components/WebSocketSettings.vue'
+import RemoteStyleSettings from './components/RemoteStyleSettings.vue'
+
+const activeTab = ref('control')
 </script>
 
 <style>
@@ -20,6 +32,7 @@ body {
   margin: 0;
   padding: 0;
   font-family: Arial, sans-serif;
+  background-color: #00000000;
 }
 
 .app-container {
@@ -30,10 +43,5 @@ body {
 
 .main-tabs {
   height: 100%;
-}
-
-.main-tabs .el-tab-pane {
-  height: calc(100% - 40px);
-  overflow: auto;
 }
 </style>
