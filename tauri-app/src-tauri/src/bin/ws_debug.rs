@@ -8,6 +8,11 @@ fn usage() {
     );
 }
 
+fn usage_and_exit(code: i32) -> ! {
+    usage();
+    std::process::exit(code)
+}
+
 #[tokio::main]
 async fn main() {
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -22,10 +27,7 @@ async fn main() {
     let room_key_type = match mode.as_str() {
         "roomid" | "room_id" => RoomKeyType::RoomId,
         "authcode" | "auth_code" => RoomKeyType::AuthCode,
-        _ => {
-            usage();
-            std::process::exit(2);
-        }
+        _ => usage_and_exit(2),
     };
 
     // 只跑一段时间用于抓日志

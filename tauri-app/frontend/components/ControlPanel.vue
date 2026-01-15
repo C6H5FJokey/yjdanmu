@@ -158,6 +158,52 @@ const styleSettings = reactive({
   randomTilt: 10
 })
 
+const normalizePreviewHost = (bindAddr) => {
+  if (!bindAddr) return null
+  // 后端可能返回 0.0.0.0:PORT，这个地址不能直接在浏览器中访问
+  if (String(bindAddr).startsWith('0.0.0.0:')) {
+    return `127.0.0.1:${String(bindAddr).split(':')[1]}`
+  }
+  return String(bindAddr)
+}
+
+const getPreviewUrl = async () => {
+  // 优先从后端读取当前 runtime bind addr + token
+  if (tauriAPI) {
+    const resp = await tauriAPI('get_general_settings')
+    const bind = normalizePreviewHost(resp.runtimeBindAddr)
+    const token = resp.settings?.sseToken || ''
+    const base = bind ? `http://${bind}` : 'http://127.0.0.1:8081'
+    const url = new URL('/preview.html', base)
+    if (token) url.searchParams.set('token', token)
+    return url.toString()
+  }
+
+  // 非 Tauri：允许用 localStorage 覆盖（方便 dev）
+  const base = localStorage.getItem('yjdanmu.devSseBase') || 'http://127.0.0.1:8081'
+  const token = localStorage.getItem('yjdanmu.sseToken') || ''
+  const url = new URL('/preview.html', base)
+  if (token) url.searchParams.set('token', token)
+  return url.toString()
+}
+
+const getSendDanmuUrl = async () => {
+  if (tauriAPI) {
+    const resp = await tauriAPI('get_general_settings')
+    const bind = normalizePreviewHost(resp.runtimeBindAddr)
+    const token = resp.settings?.sseToken || ''
+    const base = bind ? `http://${bind}` : 'http://127.0.0.1:8081'
+    const url = new URL('/api/send-danmu', base)
+    if (token) url.searchParams.set('token', token)
+    return url.toString()
+  }
+  const base = localStorage.getItem('yjdanmu.devSseBase') || 'http://127.0.0.1:8081'
+  const token = localStorage.getItem('yjdanmu.sseToken') || ''
+  const url = new URL('/api/send-danmu', base)
+  if (token) url.searchParams.set('token', token)
+  return url.toString()
+}
+
 // 检查服务状态
 const checkStatus = async () => {
   try {
@@ -195,7 +241,8 @@ const sendDanmu = async () => {
       console.log('弹幕发送结果:', result)
     } else {
       // 在非Tauri环境下，直接发送到SSE端点
-      const response = await fetch('http://localhost:8081/api/send-danmu', {
+      const url = await getSendDanmuUrl()
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -222,13 +269,14 @@ const sendDanmu = async () => {
 // 打开预览页面在外部浏览器
 const openPreviewInBrowser = async () => {
   try {
+    const url = await getPreviewUrl()
     if (tauriAPI) {
-      const result = await tauriAPI('open_in_browser', { url: 'http://127.0.0.1:8081/preview.html' })
+      const result = await tauriAPI('open_in_browser', { url })
       console.log('预览页面打开结果:', result)
       ElMessage.success('预览页面已在浏览器中打开')
     } else {
       // 在非Tauri环境下，使用window.open
-      window.open('http://127.0.0.1:8081/preview.html', '_blank')
+      window.open(url, '_blank')
       ElMessage.info('预览页面已打开')
     }
   } catch (error) {

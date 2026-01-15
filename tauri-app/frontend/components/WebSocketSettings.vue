@@ -221,6 +221,25 @@ const disconnectWebSocket = async () => {
 
 onMounted(async () => {
   if (!canUseTauri) return
+
+  // 读取通用设置作为默认重连参数（避免每次手动改）
+  try {
+    const tauriAPI = window.__TAURI_INTERNALS__.invoke
+    const resp = await tauriAPI('get_general_settings')
+    const s = resp.settings
+    if (s && !connectionConfig.roomKey) {
+      if (typeof s.defaultReconnectInterval === 'number') {
+        connectionConfig.reconnectInterval = s.defaultReconnectInterval
+      }
+      if (typeof s.defaultMaxReconnectAttempts === 'number') {
+        connectionConfig.maxReconnectAttempts = s.defaultMaxReconnectAttempts
+      }
+    }
+  } catch (e) {
+    // 忽略：不影响 WS 功能
+    console.debug('读取通用设置失败（可忽略）:', e)
+  }
+
   try {
     unlisten = await listen('websocket-status', (event) => {
       const { status, message } = event.payload

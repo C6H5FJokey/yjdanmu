@@ -1,25 +1,19 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
-use axum::response::Response;
+use axum::http::StatusCode;
 use futures::Stream;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::StreamExt;
 use tower_http::services::ServeDir;
-use tower_http::cors::{CorsLayer, Any};
+use tower_http::cors::CorsLayer;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 use async_stream;
-use chrono::prelude::*;
 
 // 全局状态结构
 #[derive(Clone)]
@@ -30,6 +24,27 @@ pub struct AppState {
     pub stats: Arc<RwLock<Stats>>,
     // 配置
     pub config: Arc<RwLock<Config>>,
+
+    // 认证/通用设置
+    pub auth: Arc<RwLock<AuthConfig>>,
+}
+
+#[derive(Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthConfig {
+    pub token: Option<String>,
+}
+
+fn check_token(auth: &AuthConfig, query: &HashMap<String, String>) -> Result<(), (StatusCode, String)> {
+    let Some(expected) = auth.token.as_deref() else {
+        return Ok(());
+    };
+    let provided = query.get("token").map(|s| s.as_str()).unwrap_or("");
+    if provided == expected {
+        Ok(())
+    } else {
+        Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()))
+    }
 }
 
 #[derive(Default, Clone)]
@@ -185,9 +200,17 @@ impl Drop for ConnectionGuard {
 // SSE连接端点
 pub async fn sse_handler(
     State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+    Query(query): Query<HashMap<String, String>>,
+) -> axum::response::Response {
     use axum::response::sse::{Event, KeepAlive, Sse};
-    use tokio_stream::StreamExt;
+
+    // 可选 token 鉴权
+    {
+        let auth = state.auth.read().await.clone();
+        if let Err((code, msg)) = check_token(&auth, &query) {
+            return (code, msg).into_response();
+        }
+    }
 
     let connection_id = Uuid::new_v4().to_string();
     let (sender, mut receiver) = broadcast::channel::<serde_json::Value>(100);
@@ -260,14 +283,23 @@ pub async fn sse_handler(
     });
 
     // 返回SSE响应
-    Sse::new(sse_stream).keep_alive(KeepAlive::default())
+    Sse::new(sse_stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 // 发送弹幕端点
 pub async fn send_danmu_handler(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
     Json(mut danmu_data): Json<DanmuData>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    // 可选 token 鉴权
+    {
+        let auth = state.auth.read().await.clone();
+        check_token(&auth, &query)?;
+    }
+
     // 验证必要字段
     if danmu_data.text.is_empty() {
         return Err((axum::http::StatusCode::BAD_REQUEST, "缺少text字段".to_string()));
@@ -302,7 +334,16 @@ pub async fn send_danmu_handler(
 // 获取状态端点
 pub async fn status_handler(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
+    // 可选 token 鉴权（状态接口失败时直接返回空状态，避免把 handler 改成 Result）
+    {
+        let auth = state.auth.read().await.clone();
+        if check_token(&auth, &query).is_err() {
+            return Json(serde_json::json!({"error": "unauthorized"}));
+        }
+    }
+
     let connections = state.sse_connections.read().await.len();
     let stats = state.stats.read().await.clone();
     
@@ -320,8 +361,15 @@ pub async fn status_handler(
 // 更新配置端点
 pub async fn update_config_handler(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
     Json(config_data): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    // 可选 token 鉴权
+    {
+        let auth = state.auth.read().await.clone();
+        check_token(&auth, &query)?;
+    }
+
     if let Some(config_obj) = config_data.get("config") {
         if let Ok(new_config) = serde_json::from_value::<Config>(config_obj.clone()) {
             // 更新全局配置

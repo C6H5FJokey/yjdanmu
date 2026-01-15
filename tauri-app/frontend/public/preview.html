@@ -385,7 +385,27 @@
 
         // 页面加载完成后自动连接SSE
         window.addEventListener('load', function() {
-            subtitleSystem.connectSSE('/api/sse');
+            const params = new URLSearchParams(window.location.search);
+            const queryToken = params.get('token');
+
+            // 如果 URL 带 token，写入 localStorage（同 origin 下后续可复用）
+            if (queryToken) {
+                try {
+                    localStorage.setItem('yjdanmu.sseToken', queryToken);
+                } catch (_) {}
+            }
+
+            let token = queryToken;
+            if (!token) {
+                try {
+                    token = localStorage.getItem('yjdanmu.sseToken');
+                } catch (_) {
+                    token = null;
+                }
+            }
+
+            const sseUrl = token ? `/api/sse?token=${encodeURIComponent(token)}` : '/api/sse';
+            subtitleSystem.connectSSE(sseUrl);
         });
         
         // 页面卸载前断开SSE连接
@@ -410,7 +430,18 @@
                 // 页面回到前台时，检查连接状态，如果断开则重新连接
                 if (!subtitleSystem.eventSource || subtitleSystem.eventSource.readyState === EventSource.CLOSED) {
                     console.log('页面回到前台，重新连接SSE');
-                    subtitleSystem.connectSSE('/api/sse');
+                    const params = new URLSearchParams(window.location.search);
+                    const queryToken = params.get('token');
+                    let token = queryToken;
+                    if (!token) {
+                        try {
+                            token = localStorage.getItem('yjdanmu.sseToken');
+                        } catch (_) {
+                            token = null;
+                        }
+                    }
+                    const sseUrl = token ? `/api/sse?token=${encodeURIComponent(token)}` : '/api/sse';
+                    subtitleSystem.connectSSE(sseUrl);
                 } else {
                     console.log('页面回到前台，SSE连接正常');
                 }

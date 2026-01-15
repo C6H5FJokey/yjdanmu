@@ -1,13 +1,27 @@
-use std::sync::Arc;
+use std::{
+    fs,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::Arc,
+};
+
+use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tokio::task;
 use tauri::Manager;
 
 mod sse_server;
 pub mod bili_websocket_client;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[cfg(rust_analyzer)]
+pub fn run() {}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[cfg(not(rust_analyzer))]
 pub fn run() {
+    let context = tauri::generate_context!("tauri.conf.json");
+
     tauri::Builder::default()
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -21,13 +35,16 @@ pub fn run() {
             // 启动SSE服务器
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                start_sse_server(app_handle).await;
+                let settings = load_general_settings(&app_handle).unwrap_or_default();
+                let _ = start_or_restart_sse_server(app_handle, settings).await;
             });
             
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             start_sse_server_cmd,
+            get_general_settings,
+            set_general_settings,
             send_danmu,
             send_config,
             get_status,
@@ -36,44 +53,165 @@ pub fn run() {
             connect_websocket,
             disconnect_websocket
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }
 
-// SSE服务器状态
-static mut SSE_SERVER_STATE: Option<Arc<sse_server::AppState>> = None;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneralSettings {
+    pub sse_port: u16,
+    pub sse_public: bool,
+    pub sse_token: Option<String>,
+    pub ws_debug: bool,
+    pub default_reconnect_interval: u64,
+    pub default_max_reconnect_attempts: u32,
+    pub danmu_filter: bili_websocket_client::DanmuFilterConfig,
+}
 
-async fn start_sse_server(_app_handle: tauri::AppHandle) {
+impl Default for GeneralSettings {
+    fn default() -> Self {
+        Self {
+            sse_port: 8081,
+            sse_public: false,
+            sse_token: None,
+            ws_debug: false,
+            default_reconnect_interval: 3000,
+            default_max_reconnect_attempts: 5,
+            danmu_filter: bili_websocket_client::DanmuFilterConfig::default(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct SseRuntime {
+    state: Option<Arc<sse_server::AppState>>,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    bind_addr: Option<SocketAddr>,
+    join_handle: Option<tauri::async_runtime::JoinHandle<()>>,
+    settings: GeneralSettings,
+}
+
+static SSE_RUNTIME: Lazy<Arc<RwLock<SseRuntime>>> = Lazy::new(|| Arc::new(RwLock::new(SseRuntime::default())));
+
+fn settings_path(app_handle: &tauri::AppHandle) -> Option<PathBuf> {
+    let dir = app_handle.path().app_config_dir().ok()?;
+    Some(dir.join("yjdanmu-settings.json"))
+}
+
+fn load_general_settings(app_handle: &tauri::AppHandle) -> Option<GeneralSettings> {
+    let path = settings_path(app_handle)?;
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice::<GeneralSettings>(&bytes).ok()
+}
+
+fn save_general_settings(app_handle: &tauri::AppHandle, settings: &GeneralSettings) -> Result<(), String> {
+    let path = settings_path(app_handle).ok_or_else(|| "无法获取配置目录".to_string())?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    }
+    let bytes = serde_json::to_vec_pretty(settings).map_err(|e| format!("序列化设置失败: {e}"))?;
+    fs::write(&path, bytes).map_err(|e| format!("写入设置失败: {e}"))?;
+    Ok(())
+}
+
+pub async fn get_sse_state() -> Option<Arc<sse_server::AppState>> {
+    SSE_RUNTIME.read().await.state.clone()
+}
+
+async fn stop_sse_server() {
+    let mut rt = SSE_RUNTIME.write().await;
+    if let Some(tx) = rt.shutdown.take() {
+        let _ = tx.send(());
+    }
+    rt.join_handle = None;
+    rt.state = None;
+    rt.bind_addr = None;
+}
+
+async fn start_or_restart_sse_server(app_handle: tauri::AppHandle, settings: GeneralSettings) -> Result<String, String> {
     use tokio::net::TcpListener;
-    
+
+    // 应用 WS debug/过滤配置
+    bili_websocket_client::set_ws_debug_enabled(settings.ws_debug).await;
+    bili_websocket_client::set_danmu_filter_config(settings.danmu_filter.clone()).await;
+
+    // 先停旧的
+    stop_sse_server().await;
+
+    let bind_ip = if settings.sse_public { "0.0.0.0" } else { "127.0.0.1" };
+    let bind_addr: SocketAddr = format!("{bind_ip}:{}", settings.sse_port)
+        .parse()
+        .map_err(|e| format!("绑定地址解析失败: {e}"))?;
+
     let state = Arc::new(sse_server::AppState {
         sse_connections: Arc::new(RwLock::new(std::collections::HashMap::new())),
         stats: Arc::new(RwLock::new(sse_server::Stats::default())),
         config: Arc::new(RwLock::new(sse_server::Config::default())),
+        auth: Arc::new(RwLock::new(sse_server::AuthConfig {
+            token: settings.sse_token.clone(),
+        })),
     });
-    
-    // 保存全局状态
-    unsafe {
-        SSE_SERVER_STATE = Some(state.clone());
+
+    let app = sse_server::create_app(state.clone());
+    let listener = TcpListener::bind(bind_addr)
+        .await
+        .map_err(|e| format!("SSE 端口绑定失败: {e}"))?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
+    let join_handle = tauri::async_runtime::spawn(async move {
+        let server = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = rx.await;
+            });
+        let _ = server.await;
+    });
+
+    {
+        let mut rt = SSE_RUNTIME.write().await;
+        rt.state = Some(state);
+        rt.shutdown = Some(tx);
+        rt.bind_addr = Some(bind_addr);
+        rt.join_handle = Some(join_handle);
+        rt.settings = settings.clone();
     }
-    
-    let app = sse_server::create_app(state);
-    
-    let listener = TcpListener::bind("127.0.0.1:8081").await.unwrap();
-    println!("SSE服务器启动在 http://127.0.0.1:8081");
-    
-    axum::serve(listener, app).await.unwrap();
+
+    // 保存到磁盘
+    let _ = save_general_settings(&app_handle, &settings);
+    Ok(format!("SSE服务器启动在 http://{}", bind_addr))
 }
 
 #[tauri::command]
 async fn start_sse_server_cmd() -> Result<String, String> {
-    // 服务器在setup阶段已经启动，这里只是返回状态
-    Ok("SSE服务器已启动".to_string())
+    let rt = SSE_RUNTIME.read().await;
+    if let Some(addr) = rt.bind_addr {
+        Ok(format!("SSE服务器运行中: http://{}", addr))
+    } else {
+        Ok("SSE服务器未启动".to_string())
+    }
+}
+
+#[tauri::command]
+async fn get_general_settings(window: tauri::Window) -> Result<serde_json::Value, String> {
+    let app_handle = window.app_handle();
+    let disk = load_general_settings(&app_handle).unwrap_or_default();
+    let rt = SSE_RUNTIME.read().await;
+    Ok(serde_json::json!({
+        "settings": disk,
+        "runtimeBindAddr": rt.bind_addr.map(|a| a.to_string()),
+    }))
+}
+
+#[tauri::command]
+async fn set_general_settings(window: tauri::Window, settings: GeneralSettings) -> Result<String, String> {
+    let app_handle = window.app_handle();
+    start_or_restart_sse_server(app_handle.clone(), settings).await
 }
 
 #[tauri::command]
 async fn send_danmu(text: String, custom_data: Option<serde_json::Value>) -> Result<String, String> {
-    if let Some(state) = unsafe { SSE_SERVER_STATE.as_ref() } {
+    if let Some(state) = get_sse_state().await {
         // 构建弹幕数据，确保基本字段存在
         let mut base_data = serde_json::json!({
             "type": "danmu",
@@ -119,7 +257,7 @@ async fn send_danmu(text: String, custom_data: Option<serde_json::Value>) -> Res
         let json_data = serde_json::to_value(danmu_data)
             .map_err(|e| format!("序列化弹幕数据失败: {}", e))?;
         
-        sse_server::send_to_all_connections(state, json_data).await;
+        sse_server::send_to_all_connections(&state, json_data).await;
         
         // 更新统计
         {
@@ -139,7 +277,7 @@ async fn send_danmu(text: String, custom_data: Option<serde_json::Value>) -> Res
 
 #[tauri::command]
 async fn send_config(config: sse_server::Config) -> Result<String, String> {
-    if let Some(state) = unsafe { SSE_SERVER_STATE.as_ref() } {
+    if let Some(state) = get_sse_state().await {
         // 更新全局配置
         *state.config.write().await = config.clone();
         
@@ -149,7 +287,7 @@ async fn send_config(config: sse_server::Config) -> Result<String, String> {
             "config": config
         });
         
-        sse_server::send_to_all_connections(state, config_msg).await;
+        sse_server::send_to_all_connections(&state, config_msg).await;
         
         Ok("配置更新成功".to_string())
     } else {
@@ -159,7 +297,7 @@ async fn send_config(config: sse_server::Config) -> Result<String, String> {
 
 #[tauri::command]
 async fn get_status() -> Result<serde_json::Value, String> {
-    if let Some(state) = unsafe { SSE_SERVER_STATE.as_ref() } {
+    if let Some(state) = get_sse_state().await {
         let connections = state.sse_connections.read().await.len();
         let stats = state.stats.read().await.clone();
         

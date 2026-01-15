@@ -46,3 +46,6 @@ hex = "0.4.3"
 brotli = "8.0.2"
 md5 = "0.8.0"
 url = "2.5.4"
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(rust_analyzer)'] }

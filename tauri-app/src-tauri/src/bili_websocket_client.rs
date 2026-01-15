@@ -10,7 +10,50 @@ use tokio_tungstenite::{
     connect_async,
     tungstenite::{self, Message},
 };
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use tauri::{AppHandle, Emitter};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DanmuFilterConfig {
+    pub enabled: bool,
+    pub keyword_blacklist: Vec<String>,
+    pub min_len: Option<u32>,
+    pub max_len: Option<u32>,
+    // 仅显示佩戴本房间粉丝牌的弹幕（media_ruid 与主播 uid 匹配）
+    pub only_fans_medal: bool,
+    // 仅显示主播/本人弹幕（通过 face_url 匹配，免登录场景下依赖 face_url）
+    pub only_streamer: bool,
+    // 屏蔽主播/本人弹幕
+    pub hide_streamer: bool,
+}
+
+impl Default for DanmuFilterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            keyword_blacklist: Vec::new(),
+            min_len: None,
+            max_len: None,
+            only_fans_medal: false,
+            only_streamer: false,
+            hide_streamer: false,
+        }
+    }
+}
+
+// 0 = follow env, 1 = force false, 2 = force true
+static WS_DEBUG_OVERRIDE: AtomicU8 = AtomicU8::new(0);
+static DANMU_FILTER: Lazy<Arc<RwLock<DanmuFilterConfig>>> = Lazy::new(|| Arc::new(RwLock::new(DanmuFilterConfig::default())));
+
+pub async fn set_ws_debug_enabled(enabled: bool) {
+    WS_DEBUG_OVERRIDE.store(if enabled { 2 } else { 1 }, Ordering::Relaxed);
+}
+
+pub async fn set_danmu_filter_config(cfg: DanmuFilterConfig) {
+    *DANMU_FILTER.write().await = cfg;
+}
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -147,6 +190,10 @@ struct WsState {
     handle: Option<JoinHandle<()>>,
     should_stop: bool,
     app_handle: Option<AppHandle>,
+
+    // roomid 模式下用于弹幕过滤（免登录）：主播 uid 与 face_url
+    room_owner_uid: Option<i64>,
+    room_owner_face_url: Option<String>,
 }
 
 static WS_STATE: Lazy<Arc<RwLock<WsState>>> = Lazy::new(|| Arc::new(RwLock::new(WsState::default())));
@@ -165,9 +212,12 @@ struct RoomIdConnInfo {
     ws_url: String,
     token: Option<String>,
     buvid: Option<String>,
+
+    owner_uid: Option<i64>,
+    owner_face_url: Option<String>,
 }
 
-async fn resolve_room_id(tmp_room_id: i64) -> i64 {
+async fn resolve_room_info(tmp_room_id: i64) -> (i64, Option<i64>) {
     #[derive(Deserialize)]
     struct Resp {
         code: i64,
@@ -176,6 +226,7 @@ async fn resolve_room_id(tmp_room_id: i64) -> i64 {
     #[derive(Deserialize)]
     struct Data {
         room_id: i64,
+        uid: Option<i64>,
     }
 
     let client = reqwest::Client::new();
@@ -191,7 +242,7 @@ async fn resolve_room_id(tmp_room_id: i64) -> i64 {
                         r.status().as_u16()
                     );
                 }
-                return tmp_room_id;
+                return (tmp_room_id, None);
             }
 
             match r.json::<Resp>().await {
@@ -199,23 +250,45 @@ async fn resolve_room_id(tmp_room_id: i64) -> i64 {
                 if parsed.code == 0 {
                     if let Some(d) = parsed.data {
                         if ws_debug_enabled() {
-                            eprintln!("[WebSocket][DEBUG] resolve_room_id tmp={tmp_room_id} real={}", d.room_id);
+                            eprintln!("[WebSocket][DEBUG] resolve_room_id tmp={tmp_room_id} real={} uid={:?}", d.room_id, d.uid);
                         }
-                        return d.room_id;
+                        return (d.room_id, d.uid);
                     }
                 }
-                tmp_room_id
+                (tmp_room_id, None)
             }
-            Err(_) => tmp_room_id,
+            Err(_) => (tmp_room_id, None),
             }
         }
         Err(e) => {
             if ws_debug_enabled() {
                 eprintln!("[WebSocket][DEBUG] resolve_room_id request failed: {e:?} (fallback tmp={tmp_room_id})");
             }
-            tmp_room_id
+            (tmp_room_id, None)
         }
     }
+}
+
+async fn fetch_face_url_by_mid(mid: i64) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Resp {
+        data: Option<Data>,
+    }
+    #[derive(Deserialize)]
+    struct Data {
+        face: Option<String>,
+    }
+
+    let client = reqwest::Client::new();
+    let url = format!("https://api.bilibili.com/x/web-interface/card?mid={mid}");
+    let res = client
+        .get(url)
+        .header("User-Agent", BILI_USER_AGENT)
+        .send()
+        .await
+        .ok()?;
+    let parsed: Resp = res.json().await.ok()?;
+    parsed.data.and_then(|d| d.face)
 }
 
 async fn fetch_buvid() -> Option<String> {
@@ -434,8 +507,13 @@ async fn fetch_danmaku_server(room_id: i64, wbi_key: &str) -> Result<(Vec<Danmak
 }
 
 async fn prepare_roomid_conn(tmp_room_id: i64) -> RoomIdConnInfo {
-    let room_id = resolve_room_id(tmp_room_id).await;
+    let (room_id, owner_uid) = resolve_room_info(tmp_room_id).await;
     let buvid = fetch_buvid().await;
+
+    let owner_face_url = match owner_uid {
+        Some(uid) => fetch_face_url_by_mid(uid).await,
+        std::option::Option::None => std::option::Option::None,
+    };
 
     // 获取弹幕服务器列表与 token（失败则回退到默认 broadcastlv）
     let (ws_url, token) = match fetch_wbi_key().await {
@@ -466,20 +544,96 @@ async fn prepare_roomid_conn(tmp_room_id: i64) -> RoomIdConnInfo {
         ws_url,
         token,
         buvid,
+
+        owner_uid,
+        owner_face_url,
     }
 }
 
 fn ws_debug_enabled() -> bool {
+    match WS_DEBUG_OVERRIDE.load(Ordering::Relaxed) {
+        1 => return false,
+        2 => return true,
+        _ => {}
+    }
     match std::env::var("BILI_WS_DEBUG") {
         Ok(v) => matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"),
         Err(_) => false,
     }
 }
 
-fn debug_dump_packet(prefix: &str, buf: &[u8]) {
+fn get_text_len(text: &str) -> u32 {
+    text.chars().count() as u32
+}
+
+async fn should_forward_danmu(msg: &serde_json::Value) -> bool {
+    let cfg = DANMU_FILTER.read().await.clone();
+    if !cfg.enabled {
+        return true;
+    }
+
+    let text = msg.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    let text_len = get_text_len(text);
+
+    if let Some(min_len) = cfg.min_len {
+        if text_len < min_len {
+            return false;
+        }
+    }
+    if let Some(max_len) = cfg.max_len {
+        if text_len > max_len {
+            return false;
+        }
+    }
+
+    if !cfg.keyword_blacklist.is_empty() {
+        for kw in &cfg.keyword_blacklist {
+            let kw = kw.trim();
+            if !kw.is_empty() && text.contains(kw) {
+                return false;
+            }
+        }
+    }
+
+    let (owner_uid, owner_face) = {
+        let guard = WS_STATE.read().await;
+        (guard.room_owner_uid, guard.room_owner_face_url.clone())
+    };
+
+    if cfg.only_fans_medal {
+        let Some(owner_uid) = owner_uid else {
+            return false;
+        };
+        let owner_uid_str = owner_uid.to_string();
+        let media_ruid = msg.get("media_ruid").and_then(|v| v.as_str()).unwrap_or("");
+        if media_ruid != owner_uid_str {
+            return false;
+        }
+    }
+
+    if cfg.only_streamer || cfg.hide_streamer {
+        let Some(owner_face) = owner_face else {
+            // 无法获取主播 face_url 时，为避免误判：only_streamer 直接过滤掉；hide_streamer 则不处理
+            return !cfg.only_streamer;
+        };
+        let face_url = msg.get("face_url").and_then(|v| v.as_str()).unwrap_or("");
+        let is_streamer = !face_url.is_empty() && face_url == owner_face;
+        if cfg.only_streamer && !is_streamer {
+            return false;
+        }
+        if cfg.hide_streamer && is_streamer {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn debug_dump_packet(prefix: &str, buf: impl AsRef<[u8]>) {
     if !ws_debug_enabled() {
         return;
     }
+    let buf = buf.as_ref();
     if buf.len() < HEADER_LEN as usize {
         eprintln!("[WebSocket][DEBUG] {prefix}: len={} (< header)", buf.len());
         return;
@@ -585,6 +739,8 @@ pub async fn disconnect_websocket() -> Result<(), String> {
         let mut guard = WS_STATE.write().await;
         guard.should_stop = false;
         guard.handle = None;
+        guard.room_owner_uid = None;
+        guard.room_owner_face_url = None;
     }
 
     emit_status("disconnected", "已断开连接").await;
@@ -652,6 +808,15 @@ async fn run_ws_loop(
                 attempts = 0;
                 let (mut write, mut read) = ws_stream.split();
 
+                // roomid 模式下保存主播 uid/face_url，用于后续弹幕过滤
+                if let RoomKeyType::RoomId = room_key_type {
+                    if let Some(info) = maybe_room_info.as_ref() {
+                        let mut guard = WS_STATE.write().await;
+                        guard.room_owner_uid = info.owner_uid;
+                        guard.room_owner_face_url = info.owner_face_url.clone();
+                    }
+                }
+
                 // 鉴权
                 match room_key_type {
                     RoomKeyType::RoomId => {
@@ -709,7 +874,7 @@ async fn run_ws_loop(
                             match msg {
                                 Some(Ok(Message::Binary(bin))) => {
                                     debug_dump_packet("recv frame", &bin);
-                                    handle_packet(&bin).await
+                                    handle_packet(bin.as_ref()).await
                                 }
                                 Some(Ok(Message::Text(txt))) => { eprintln!("[WebSocket] 收到文本帧（异常）: {txt}"); }
                                 Some(Ok(Message::Close(frame))) => { 
@@ -725,7 +890,7 @@ async fn run_ws_loop(
                                     emit_status("disconnected", &format!("读取错误: {}", e)).await;
                                     break; 
                                 }
-                                None => { 
+                                std::option::Option::None => { 
                                     println!("[WebSocket] 连接结束"); 
                                     emit_status("disconnected", "连接结束").await;
                                     break; 
@@ -863,7 +1028,9 @@ async fn handle_command_text(text: &str) {
                         // 设计为免登陆，所以在连接时会通过房间号获得当前用户id，通过用户id能获取face_url
                         // 如果不登录不会显示发送弹幕者的id和用户名，但是会给出face_url，可以靠这个来判断是否是自己的弹幕，并根据配置过滤
                         // 还能通过media_ruid来判断是否为佩戴自己粉丝牌发送的弹幕
-                        forward_to_sse(msg).await;
+                        if should_forward_danmu(&msg).await {
+                            forward_to_sse(msg).await;
+                        }
                     }
                 }
                 "OPEN_LIVE_DANMAKU" => {
@@ -890,8 +1057,8 @@ async fn handle_command_text(text: &str) {
 }
 
 async fn forward_to_sse(val: serde_json::Value) {
-    if let Some(state) = unsafe { crate::SSE_SERVER_STATE.as_ref() } {
-        crate::sse_server::send_to_all_connections(state, val).await;
+    if let Some(state) = crate::get_sse_state().await {
+        crate::sse_server::send_to_all_connections(&state, val).await;
     }
 }
 
@@ -912,11 +1079,13 @@ struct StartGameResp {
     data: StartGameData,
 }
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct StartGameData {
     game_info: GameInfo,
     websocket_info: WebsocketInfo,
 }
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct GameInfo {
     game_id: String,
 }
@@ -940,19 +1109,19 @@ async fn start_game_and_get_ws(
     // 依照 blivedm/clients/open_live.py _request_open_live
     let app_id: i64 = match open_live_app_id {
         Some(v) => v,
-        None => std::env::var("BILI_OPEN_LIVE_APP_ID")
+        std::option::Option::None => std::env::var("BILI_OPEN_LIVE_APP_ID")
             .map_err(|_| "缺少 BILI_OPEN_LIVE_APP_ID")?
             .parse()
             .map_err(|_| "BILI_OPEN_LIVE_APP_ID 不是数字")?,
     };
     let access_key_id = match open_live_access_key_id {
         Some(v) => v,
-        None => std::env::var("BILI_OPEN_LIVE_ACCESS_KEY_ID")
+        std::option::Option::None => std::env::var("BILI_OPEN_LIVE_ACCESS_KEY_ID")
             .map_err(|_| "缺少 BILI_OPEN_LIVE_ACCESS_KEY_ID")?,
     };
     let access_key_secret = match open_live_access_key_secret {
         Some(v) => v,
-        None => std::env::var("BILI_OPEN_LIVE_ACCESS_KEY_SECRET")
+        std::option::Option::None => std::env::var("BILI_OPEN_LIVE_ACCESS_KEY_SECRET")
             .map_err(|_| "缺少 BILI_OPEN_LIVE_ACCESS_KEY_SECRET")?,
     };
 

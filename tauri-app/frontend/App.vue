@@ -6,6 +6,9 @@
           <el-tab-pane label="控制面板" name="control">
             <ControlPanel />
           </el-tab-pane>
+          <el-tab-pane label="通用设置" name="general">
+            <GeneralSettings />
+          </el-tab-pane>
           <el-tab-pane label="WebSocket设置" name="websocket">
             <WebSocketSettings />
           </el-tab-pane>
@@ -21,6 +24,7 @@
 <script setup>
 import { ref } from 'vue'
 import ControlPanel from './components/ControlPanel.vue'
+import GeneralSettings from './components/GeneralSettings.vue'
 import WebSocketSettings from './components/WebSocketSettings.vue'
 import RemoteStyleSettings from './components/RemoteStyleSettings.vue'
 
