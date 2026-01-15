@@ -204,6 +204,23 @@ const getSendDanmuUrl = async () => {
   return url.toString()
 }
 
+const getConfigUrl = async () => {
+  if (tauriAPI) {
+    const resp = await tauriAPI('get_general_settings')
+    const bind = normalizePreviewHost(resp.runtimeBindAddr)
+    const token = resp.settings?.sseToken || ''
+    const base = bind ? `http://${bind}` : 'http://127.0.0.1:8081'
+    const url = new URL('/api/config', base)
+    if (token) url.searchParams.set('token', token)
+    return url.toString()
+  }
+  const base = localStorage.getItem('yjdanmu.devSseBase') || 'http://127.0.0.1:8081'
+  const token = localStorage.getItem('yjdanmu.sseToken') || ''
+  const url = new URL('/api/config', base)
+  if (token) url.searchParams.set('token', token)
+  return url.toString()
+}
+
 // 检查服务状态
 const checkStatus = async () => {
   try {
@@ -293,7 +310,8 @@ const applyStyleSettings = async () => {
       console.log('样式设置应用结果:', result)
     } else {
       // 在非Tauri环境下，直接发送配置到SSE端点
-      const response = await fetch('http://localhost:8081/api/config', {
+      const url = await getConfigUrl()
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

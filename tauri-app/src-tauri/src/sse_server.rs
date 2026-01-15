@@ -62,7 +62,7 @@ pub struct Stats {
     pub last_activity: Option<u64>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
     pub font_size: u32,

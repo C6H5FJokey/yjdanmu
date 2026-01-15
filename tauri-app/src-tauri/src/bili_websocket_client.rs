@@ -67,42 +67,92 @@ fn now_hms() -> String {
     chrono::Local::now().format("%H:%M:%S").to_string()
 }
 
+fn hms_from_unix_ms(ms: u64) -> String {
+    use chrono::TimeZone;
+
+    // B 站 DANMU_MSG 的 timestamp 为 Unix 毫秒时间戳
+    chrono::Local
+        .timestamp_millis_opt(ms as i64)
+        .single()
+        .map(|dt| dt.format("%H:%M:%S").to_string())
+        .unwrap_or_else(now_hms)
+}
+
 fn rgb_decimal_to_hex(v: u64) -> String {
     // B 站 DANMU_MSG 的颜色字段通常是十进制 RGB
     format!("#{:06x}", (v & 0x00ff_ffff))
 }
 
-fn make_sse_danmu(text: String, user: Option<String>, color: Option<String>, size: Option<u32>, face_url: Option<String>, media_ruid: Option<String>) -> serde_json::Value {
+fn make_sse_event(
+    msg_type: &'static str,
+    text: String,
+    user: Option<String>,
+    color: Option<String>,
+    size: Option<u32>,
+    face_url: Option<String>,
+    media_ruid: Option<u32>,
+    time_ms: Option<u64>,
+) -> serde_json::Value {
+    let timestamp = time_ms.unwrap_or_else(now_ms);
+    let timestamp_text = hms_from_unix_ms(timestamp);
     serde_json::json!({
-        "type": "danmu",
+        "type": msg_type,
         "text": text,
         "user": user.unwrap_or_else(|| "匿名用户".to_string()),
         "color": color.unwrap_or_else(|| "#ffffff".to_string()),
         "size": size.unwrap_or(32),
-        "time": now_ms(),
-        "timestamp": now_hms(),
+        // 兼容字段：同样使用 Unix 毫秒时间戳
+        "time": timestamp,
+        // 对齐 blivedm/web.py: timestamp 是 Unix 毫秒时间戳
+        "timestamp": timestamp,
+        // 仅用于展示的人类可读时间（不要当作 timestamp 使用）
+        "timestampText": timestamp_text,
         "face_url": face_url,
         "media_ruid": media_ruid,
+        // 样式/过滤辅助字段（缺省由 forward_to_sse 兜底补齐）
+        "hasOwnMedal": false,
+        "isModerator": false,
+        // 舰队等级：0非舰队, 1总督, 2提督, 3舰长（blivedm/web.py: privilege_type）
+        "guardLevel": 0,
     })
+}
+
+fn make_sse_danmu(
+    text: String,
+    user: Option<String>,
+    color: Option<String>,
+    size: Option<u32>,
+    face_url: Option<String>,
+    media_ruid: Option<u32>,
+    time_ms: Option<u64>,
+) -> serde_json::Value {
+    make_sse_event("danmu", text, user, color, size, face_url, media_ruid, time_ms)
 }
 
 fn parse_danmu_msg(root: &serde_json::Value) -> Option<serde_json::Value> {
     // 典型结构：{"cmd":"DANMU_MSG", "info": [meta, text, user, ...]}
+    
     let text = root.pointer("/info/1")?.as_str()?.to_string();
+
+    // web 协议：info[0][4] 是 Unix 毫秒时间戳（blivedm 的 DanmakuMessage.timestamp）
+    let time_ms = root
+        .pointer("/info/0/4")
+        .and_then(|v| v.as_u64());
+
     let user = root
         .pointer("/info/2/1")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
     let face_url = root
-        .pointer("/info/2/0")
+        .pointer("/info/0/15/user/base/face")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
     let media_ruid = root
-        .pointer("/info/3/12")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .pointer("/info/0/15/user/medal/ruid")
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok());
 
     let color = root
         .pointer("/info/0/3")
@@ -114,7 +164,29 @@ fn parse_danmu_msg(root: &serde_json::Value) -> Option<serde_json::Value> {
         .and_then(|v| v.as_u64())
         .and_then(|v| u32::try_from(v).ok());
 
-    Some(make_sse_danmu(text, user, color, size, face_url, media_ruid))
+    // 尝试解析房管标记（不同地区/模式下字段可能缺失；缺失则按 false 处理）
+    let is_moderator = root
+        .pointer("/info/2/2")
+        .and_then(|v| v.as_i64())
+        .map(|v| v == 1)
+        .unwrap_or(false);
+
+    // 舰队类型（blivedm/web.py: privilege_type）
+    let guard_level = root
+        .pointer("/info/7")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+        .clamp(0, 3);
+
+    let mut msg = make_sse_danmu(text, user, color, size, face_url, media_ruid, time_ms);
+    if let Some(obj) = msg.as_object_mut() {
+        obj.insert("isModerator".to_string(), serde_json::Value::Bool(is_moderator));
+        obj.insert(
+            "guardLevel".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(guard_level)),
+        );
+    }
+    Some(msg)
 }
 
 fn parse_open_live_danmaku(root: &serde_json::Value) -> Option<serde_json::Value> {
@@ -125,7 +197,7 @@ fn parse_open_live_danmaku(root: &serde_json::Value) -> Option<serde_json::Value
         .get("uname")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    Some(make_sse_danmu(text, user, None, None, None, None))
+    Some(make_sse_event("danmu", text, user, None, None, None, None, None))
 }
 
 fn parse_open_live_gift(root: &serde_json::Value) -> Option<serde_json::Value> {
@@ -138,7 +210,7 @@ fn parse_open_live_gift(root: &serde_json::Value) -> Option<serde_json::Value> {
     let gift_name = data.get("gift_name").and_then(|v| v.as_str()).unwrap_or("礼物");
     let gift_num = data.get("gift_num").and_then(|v| v.as_u64()).unwrap_or(1);
     let text = format!("送出 {gift_name} x{gift_num}");
-    Some(make_sse_danmu(text, user, None, None, None, None))
+    Some(make_sse_event("gift", text, user, None, None, None, None, None))
 }
 
 fn parse_open_live_super_chat(root: &serde_json::Value) -> Option<serde_json::Value> {
@@ -158,7 +230,7 @@ fn parse_open_live_super_chat(root: &serde_json::Value) -> Option<serde_json::Va
     } else {
         format!("醒目留言：{message}")
     };
-    Some(make_sse_danmu(text, user, None, None, None, None))
+    Some(make_sse_event("superChat", text, user, None, None, None, None, None))
 }
 
 const BILI_BROADCAST_WS: &str = "wss://broadcastlv.chat.bilibili.com/sub";
@@ -190,6 +262,10 @@ struct WsState {
     handle: Option<JoinHandle<()>>,
     should_stop: bool,
     app_handle: Option<AppHandle>,
+
+    // 当前连接的房间标识（用于按房间样式配置）
+    current_room_key: Option<String>,
+    current_room_key_type: Option<RoomKeyType>,
 
     // roomid 模式下用于弹幕过滤（免登录）：主播 uid 与 face_url
     room_owner_uid: Option<i64>,
@@ -702,6 +778,8 @@ pub async fn connect_websocket(
 
         guard.should_stop = false;
         guard.app_handle = Some(app_handle.clone());
+        guard.current_room_key = Some(room_key.clone());
+        guard.current_room_key_type = Some(room_key_type);
     }
 
     emit_status("connecting", "连接中...").await;
@@ -1023,11 +1101,6 @@ async fn handle_command_text(text: &str) {
                     // println!("[WebSocket] 弹幕原始信息 {}", serde_json::to_string_pretty(&val).unwrap_or_default());
                     if let Some(msg) = parse_danmu_msg(&val) {
                         println!("[WebSocket] 弹幕解析结果 {}", serde_json::to_string_pretty(&msg).unwrap_or_default());
-                        // TODO 
-                        // 添加弹幕过滤，配置由前端负责
-                        // 设计为免登陆，所以在连接时会通过房间号获得当前用户id，通过用户id能获取face_url
-                        // 如果不登录不会显示发送弹幕者的id和用户名，但是会给出face_url，可以靠这个来判断是否是自己的弹幕，并根据配置过滤
-                        // 还能通过media_ruid来判断是否为佩戴自己粉丝牌发送的弹幕
                         if should_forward_danmu(&msg).await {
                             forward_to_sse(msg).await;
                         }
@@ -1058,8 +1131,58 @@ async fn handle_command_text(text: &str) {
 
 async fn forward_to_sse(val: serde_json::Value) {
     if let Some(state) = crate::get_sse_state().await {
+        // 兜底补齐 hasOwnMedal / isModerator / guardLevel
+        let mut val = val;
+        if let Some(obj) = val.as_object_mut() {
+            if obj.get("isModerator").and_then(|v| v.as_bool()).is_none() {
+                obj.insert("isModerator".to_string(), serde_json::Value::Bool(false));
+            }
+
+            if obj.get("hasOwnMedal").and_then(|v| v.as_bool()).is_none() {
+                obj.insert("hasOwnMedal".to_string(), serde_json::Value::Bool(false));
+            }
+
+            if obj.get("guardLevel").and_then(|v| v.as_i64()).is_none() {
+                obj.insert("guardLevel".to_string(), serde_json::Value::Number(0.into()));
+            }
+
+            // 通过 media_ruid 与主播 uid 匹配判断“佩戴本房间粉丝牌”
+            let media_ruid = obj.get("media_ruid").and_then(|v| {
+                if let Some(u) = v.as_u64() {
+                    Some(u.to_string())
+                } else {
+                    v.as_str().map(|s| s.to_string())
+                }
+            });
+
+            if let Some(media_ruid) = media_ruid {
+                let owner_uid = WS_STATE.read().await.room_owner_uid;
+                if let Some(owner_uid) = owner_uid {
+                    if media_ruid == owner_uid.to_string() {
+                        obj.insert("hasOwnMedal".to_string(), serde_json::Value::Bool(true));
+                    }
+                }
+            }
+        }
+
+        let val = crate::apply_style_to_sse_message(val).await;
         crate::sse_server::send_to_all_connections(&state, val).await;
     }
+}
+
+pub async fn current_room_key() -> Option<String> {
+    WS_STATE.read().await.current_room_key.clone()
+}
+
+pub async fn current_room_key_type() -> Option<String> {
+    WS_STATE
+        .read()
+        .await
+        .current_room_key_type
+        .map(|t| match t {
+            RoomKeyType::RoomId => "RoomId".to_string(),
+            RoomKeyType::AuthCode => "AuthCode".to_string(),
+        })
 }
 
 async fn emit_status(status: &str, message: &str) {

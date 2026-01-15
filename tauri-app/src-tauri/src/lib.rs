@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     net::SocketAddr,
     path::PathBuf,
@@ -12,6 +13,237 @@ use tauri::Manager;
 
 mod sse_server;
 pub mod bili_websocket_client;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StyleProfile {
+    /// 基础样式（默认应用）
+    pub base: sse_server::Config,
+    /// 按消息类型覆盖样式（消息的 type 字段，如 danmu/gift/superChat 等）
+    #[serde(default)]
+    pub by_type: HashMap<String, sse_server::Config>,
+    /// 佩戴本房间粉丝牌（media_ruid 与主播 uid 匹配）时的覆盖样式（可选）
+    pub own_medal: Option<sse_server::Config>,
+    /// 舰队高亮：总督（privilege_type=1，仅普通弹幕 type=danmu 生效）
+    pub guard_governor: Option<sse_server::Config>,
+    /// 舰队高亮：提督（privilege_type=2，仅普通弹幕 type=danmu 生效）
+    pub guard_admiral: Option<sse_server::Config>,
+    /// 舰队高亮：舰长（privilege_type=3，仅普通弹幕 type=danmu 生效）
+    pub guard_captain: Option<sse_server::Config>,
+    /// 房管弹幕覆盖样式（可选）
+    pub moderator: Option<sse_server::Config>,
+}
+
+impl Default for StyleProfile {
+    fn default() -> Self {
+        Self {
+            base: sse_server::Config::default(),
+            by_type: HashMap::new(),
+            own_medal: None,
+            guard_governor: None,
+            guard_admiral: None,
+            guard_captain: None,
+            moderator: None,
+        }
+    }
+}
+
+static STYLE_PROFILE: Lazy<Arc<RwLock<StyleProfile>>> = Lazy::new(|| Arc::new(RwLock::new(StyleProfile::default())));
+
+fn style_profile_path(app_handle: &tauri::AppHandle) -> Option<PathBuf> {
+    let dir = app_handle.path().app_config_dir().ok()?;
+    Some(dir.join("yjdanmu-style.json"))
+}
+
+fn legacy_room_styles_path(app_handle: &tauri::AppHandle) -> Option<PathBuf> {
+    let dir = app_handle.path().app_config_dir().ok()?;
+    Some(dir.join("yjdanmu-room-styles.json"))
+}
+
+fn load_style_profile(app_handle: &tauri::AppHandle) -> StyleProfile {
+    // 新版：全局样式配置
+    if let Some(path) = style_profile_path(app_handle) {
+        if let Ok(bytes) = fs::read(path) {
+            if let Ok(profile) = serde_json::from_slice::<StyleProfile>(&bytes) {
+                return profile;
+            }
+        }
+    }
+
+    // 兼容：旧版“按房间”配置文件 -> 尝试取 global 或第一项
+    if let Some(path) = legacy_room_styles_path(app_handle) {
+        if let Ok(bytes) = fs::read(path) {
+            if let Ok(map) = serde_json::from_slice::<HashMap<String, StyleProfile>>(&bytes) {
+                if let Some(p) = map.get("global") {
+                    return p.clone();
+                }
+                if let Some((_, p)) = map.into_iter().next() {
+                    return p;
+                }
+            }
+        }
+    }
+
+    StyleProfile::default()
+}
+
+fn save_style_profile(app_handle: &tauri::AppHandle, profile: &StyleProfile) -> Result<(), String> {
+    let path = style_profile_path(app_handle).ok_or_else(|| "无法获取配置目录".to_string())?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    }
+    let bytes = serde_json::to_vec_pretty(profile).map_err(|e| format!("序列化样式配置失败: {e}"))?;
+    fs::write(&path, bytes).map_err(|e| format!("写入样式配置失败: {e}"))?;
+    Ok(())
+}
+
+async fn broadcast_config_to_sse(config: sse_server::Config) -> Result<(), String> {
+    if let Some(state) = get_sse_state().await {
+        *state.config.write().await = config.clone();
+        let msg = serde_json::json!({
+            "type": "config",
+            "config": config,
+        });
+        sse_server::send_to_all_connections(&state, msg).await;
+        Ok(())
+    } else {
+        Err("SSE服务器未启动".to_string())
+    }
+}
+
+pub async fn apply_style_to_sse_message(mut val: serde_json::Value) -> serde_json::Value {
+    let Some(obj) = val.as_object_mut() else {
+        return val;
+    };
+    let Some(msg_type) = obj.get("type").and_then(|v| v.as_str()) else {
+        return val;
+    };
+    if msg_type == "config" || msg_type == "ping" {
+        return val;
+    }
+
+    let profile = STYLE_PROFILE.read().await;
+
+    // 合成策略：
+    // 1) 先得到“普通弹幕 danmu”的基础样式：base -> byType[danmu]。
+    // 2) gift/superChat 等其它类型默认继承 danmu（让它们“跟普通弹幕一个机制”）；如果存在 byType[type] 才替换为该 type 的样式。
+    // 3) danmu 子类高亮（粉丝牌/舰队/房管）只覆盖视觉字段。
+    let mut danmu_effective = profile.base.clone();
+    if let Some(danmu_cfg) = profile.by_type.get("danmu") {
+        danmu_effective = danmu_cfg.clone();
+    }
+
+    let mut effective = if msg_type == "danmu" {
+        danmu_effective.clone()
+    } else {
+        // 其它类型默认继承 danmu
+        danmu_effective.clone()
+    };
+
+    if msg_type != "danmu" {
+        if let Some(type_cfg) = profile.by_type.get(msg_type) {
+            // 目前是“整份替换”策略（UI 也是整份配置）；没有覆盖时就继承 danmu。
+            effective = type_cfg.clone();
+        }
+    }
+
+    let mut apply_visual_overlay = |cfg: &sse_server::Config| {
+        effective.font_size = cfg.font_size;
+        effective.color = cfg.color.clone();
+        effective.stroke_color = cfg.stroke_color.clone();
+        effective.stroke_width = cfg.stroke_width;
+    };
+
+    if msg_type == "danmu" {
+        let has_own_medal = obj
+            .get("hasOwnMedal")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if has_own_medal {
+            if let Some(medal_cfg) = profile.own_medal.as_ref() {
+                // 高亮层：只覆盖“视觉强调”字段
+                apply_visual_overlay(medal_cfg);
+            }
+        }
+
+        // 舰队高亮：也是普通弹幕的“子类高亮”
+        // blivedm/web.py: privilege_type: 0非舰队, 1总督, 2提督, 3舰长
+        let guard_level = obj
+            .get("guardLevel")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        match guard_level {
+            1 => {
+                if let Some(cfg) = profile.guard_governor.as_ref() {
+                    apply_visual_overlay(cfg);
+                }
+            }
+            2 => {
+                if let Some(cfg) = profile.guard_admiral.as_ref() {
+                    apply_visual_overlay(cfg);
+                }
+            }
+            3 => {
+                if let Some(cfg) = profile.guard_captain.as_ref() {
+                    apply_visual_overlay(cfg);
+                }
+            }
+            _ => {}
+        }
+
+        let is_moderator = obj
+            .get("isModerator")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if is_moderator {
+            if let Some(mod_cfg) = profile.moderator.as_ref() {
+                // 房管优先级更高：同样只做视觉强调覆盖
+                apply_visual_overlay(mod_cfg);
+            }
+        }
+    }
+
+    // 明确写入样式字段，优先级高于 preview.html 的 defaultConfig
+    obj.insert(
+        "fontSize".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(effective.font_size)),
+    );
+    obj.insert("color".to_string(), serde_json::Value::String(effective.color.clone()));
+    obj.insert(
+        "strokeColor".to_string(),
+        serde_json::Value::String(effective.stroke_color.clone()),
+    );
+    obj.insert(
+        "strokeWidth".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(effective.stroke_width)),
+    );
+    obj.insert(
+        "typingSpeed".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(effective.typing_speed)),
+    );
+    obj.insert(
+        "displayDuration".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(effective.display_duration)),
+    );
+    obj.insert(
+        "fadeDuration".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(effective.fade_duration)),
+    );
+    obj.insert(
+        "shakeAmplitude".to_string(),
+        serde_json::Value::Number(
+            serde_json::Number::from_f64(effective.shake_amplitude).unwrap_or_else(|| 0.into()),
+        ),
+    );
+    obj.insert(
+        "randomTilt".to_string(),
+        serde_json::Value::Number(
+            serde_json::Number::from_f64(effective.random_tilt).unwrap_or_else(|| 0.into()),
+        ),
+    );
+
+    val
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[cfg(rust_analyzer)]
@@ -40,6 +272,13 @@ pub fn run() {
                     eprintln!("[SSE] 启动失败: {e}");
                 }
             });
+
+            // 加载房间样式配置
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let profile = load_style_profile(&app_handle);
+                *STYLE_PROFILE.write().await = profile;
+            });
             
             Ok(())
         })
@@ -47,6 +286,12 @@ pub fn run() {
             start_sse_server_cmd,
             get_general_settings,
             set_general_settings,
+            get_current_room_context,
+            get_style_profile,
+            set_style_profile,
+            // 兼容旧命令名（后续可移除）
+            get_room_style_profile,
+            set_room_style_profile,
             send_danmu,
             send_config,
             get_status,
@@ -394,6 +639,13 @@ async fn connect_websocket(
     open_live_access_key_secret: Option<String>,
 ) -> Result<String, String> {
     let app_handle = window.app_handle();
+
+    // 连接前下发全局 base 样式，让 preview 立即切换默认样式
+    {
+        let profile = STYLE_PROFILE.read().await;
+        let _ = broadcast_config_to_sse(profile.base.clone()).await;
+    }
+
     bili_websocket_client::connect_websocket(
         app_handle.clone(),
         room_key,
@@ -411,4 +663,44 @@ async fn connect_websocket(
 #[tauri::command]
 async fn disconnect_websocket() -> Result<String, String> {
     bili_websocket_client::disconnect_websocket().await.map(|_| "WebSocket断开成功".to_string())
+}
+
+#[tauri::command]
+async fn get_current_room_context() -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "roomKey": bili_websocket_client::current_room_key().await,
+        "roomKeyType": bili_websocket_client::current_room_key_type().await,
+    }))
+}
+
+#[tauri::command]
+async fn get_style_profile(_window: tauri::Window) -> Result<serde_json::Value, String> {
+    let profile = STYLE_PROFILE.read().await.clone();
+    Ok(serde_json::json!({
+        "profile": profile,
+    }))
+}
+
+#[tauri::command]
+async fn set_style_profile(window: tauri::Window, profile: StyleProfile) -> Result<String, String> {
+    let app_handle = window.app_handle();
+    {
+        *STYLE_PROFILE.write().await = profile.clone();
+        save_style_profile(&app_handle, &profile)?;
+    }
+
+    // 全局配置：立刻下发 base 配置
+    let _ = broadcast_config_to_sse(profile.base.clone()).await;
+    Ok("样式配置已保存".to_string())
+}
+
+#[tauri::command]
+async fn get_room_style_profile(_window: tauri::Window, room_key: Option<String>) -> Result<serde_json::Value, String> {
+    let _ = room_key;
+    get_style_profile(_window).await
+}
+
+#[tauri::command]
+async fn set_room_style_profile(window: tauri::Window, _room_key: String, profile: StyleProfile) -> Result<String, String> {
+    set_style_profile(window, profile).await
 }

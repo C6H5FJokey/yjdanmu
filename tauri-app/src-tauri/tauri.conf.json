@@ -2,9 +2,9 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "yjdanmu",
   "version": "0.1.0",
-  "identifier": "com.tauri.dev",
+  "identifier": "com.yjdanmu.app",
   "build": {
-    "frontendDist": "../frontend",
+    "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "echo Frontend must be started separately",
     "beforeBuildCommand": "cd ../frontend && npm run build"

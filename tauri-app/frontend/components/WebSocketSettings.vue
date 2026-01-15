@@ -20,8 +20,8 @@
         <el-form :model="connectionConfig" label-width="120px">
           <el-form-item label="连接类型">
             <el-radio-group v-model="connectionConfig.roomKeyType">
-              <el-radio label="RoomId">房间ID</el-radio>
-              <el-radio label="AuthCode">用户码</el-radio>
+              <el-radio value="RoomId">房间ID</el-radio>
+              <el-radio value="AuthCode">用户码</el-radio>
             </el-radio-group>
           </el-form-item>
           <el-form-item :label="connectionConfig.roomKeyType === 'RoomId' ? '房间ID' : '用户码'">
