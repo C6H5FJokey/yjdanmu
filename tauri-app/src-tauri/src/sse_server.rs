@@ -1,5 +1,6 @@
 use axum::{
     extract::{Query, State},
+    response::Html,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -14,6 +15,13 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 use async_stream;
+
+// 直接内置预览页，避免依赖运行时工作目录下的静态文件路径
+static PREVIEW_HTML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../frontend/public/preview.html"));
+
+async fn preview_html_handler() -> Html<&'static str> {
+    Html(PREVIEW_HTML)
+}
 
 // 全局状态结构
 #[derive(Clone)]
@@ -411,6 +419,7 @@ pub async fn send_to_all_connections(state: &Arc<AppState>, msg: serde_json::Val
 // 创建Axum应用
 pub fn create_app(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/preview.html", get(preview_html_handler))
         .route("/api/sse", get(sse_handler))
         .route("/api/send-danmu", post(send_danmu_handler))
         .route("/api/status", get(status_handler))

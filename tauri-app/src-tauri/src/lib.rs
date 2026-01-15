@@ -36,7 +36,9 @@ pub fn run() {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let settings = load_general_settings(&app_handle).unwrap_or_default();
-                let _ = start_or_restart_sse_server(app_handle, settings).await;
+                if let Err(e) = start_or_restart_sse_server(app_handle, settings).await {
+                    eprintln!("[SSE] 启动失败: {e}");
+                }
             });
             
             Ok(())
@@ -120,29 +122,70 @@ pub async fn get_sse_state() -> Option<Arc<sse_server::AppState>> {
 }
 
 async fn stop_sse_server() {
-    let mut rt = SSE_RUNTIME.write().await;
-    if let Some(tx) = rt.shutdown.take() {
+    let (shutdown, join_handle) = {
+        let mut rt = SSE_RUNTIME.write().await;
+        let shutdown = rt.shutdown.take();
+        let join_handle = rt.join_handle.take();
+        rt.state = None;
+        rt.bind_addr = None;
+        (shutdown, join_handle)
+    };
+
+    if let Some(tx) = shutdown {
         let _ = tx.send(());
     }
-    rt.join_handle = None;
-    rt.state = None;
-    rt.bind_addr = None;
+    if let Some(handle) = join_handle {
+        // 等待旧服务器真正退出，避免立即 bind 同端口时报 AddrInUse
+        let _ = handle.await;
+    }
 }
 
 async fn start_or_restart_sse_server(app_handle: tauri::AppHandle, settings: GeneralSettings) -> Result<String, String> {
     use tokio::net::TcpListener;
-
-    // 应用 WS debug/过滤配置
-    bili_websocket_client::set_ws_debug_enabled(settings.ws_debug).await;
-    bili_websocket_client::set_danmu_filter_config(settings.danmu_filter.clone()).await;
-
-    // 先停旧的
-    stop_sse_server().await;
+    use std::io::ErrorKind;
 
     let bind_ip = if settings.sse_public { "0.0.0.0" } else { "127.0.0.1" };
     let bind_addr: SocketAddr = format!("{bind_ip}:{}", settings.sse_port)
         .parse()
         .map_err(|e| format!("绑定地址解析失败: {e}"))?;
+
+    // 如果 bind_addr 没变且服务已在运行：不重启（避免“自己占用自己”）
+    {
+        let rt = SSE_RUNTIME.read().await;
+        if rt.bind_addr == Some(bind_addr) {
+            if let Some(state) = rt.state.clone() {
+                // 热更新 token
+                *state.auth.write().await = sse_server::AuthConfig {
+                    token: settings.sse_token.clone(),
+                };
+            }
+        }
+    }
+
+    {
+        let rt = SSE_RUNTIME.write().await;
+        if rt.bind_addr == Some(bind_addr) && rt.state.is_some() {
+            // 应用 WS debug/过滤配置（不需要重启）
+            drop(rt);
+            bili_websocket_client::set_ws_debug_enabled(settings.ws_debug).await;
+            bili_websocket_client::set_danmu_filter_config(settings.danmu_filter.clone()).await;
+
+            // 更新 runtime 记录
+            let mut rt2 = SSE_RUNTIME.write().await;
+            rt2.settings = settings.clone();
+
+            // 保存到磁盘
+            let _ = save_general_settings(&app_handle, &settings);
+            return Ok(format!("SSE服务器已在运行: http://{}（已应用设置）", bind_addr));
+        }
+    }
+
+    // 需要真正重启：先停旧的并等待退出
+    stop_sse_server().await;
+
+    // 应用 WS debug/过滤配置
+    bili_websocket_client::set_ws_debug_enabled(settings.ws_debug).await;
+    bili_websocket_client::set_danmu_filter_config(settings.danmu_filter.clone()).await;
 
     let state = Arc::new(sse_server::AppState {
         sse_connections: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -156,7 +199,16 @@ async fn start_or_restart_sse_server(app_handle: tauri::AppHandle, settings: Gen
     let app = sse_server::create_app(state.clone());
     let listener = TcpListener::bind(bind_addr)
         .await
-        .map_err(|e| format!("SSE 端口绑定失败: {e}"))?;
+        .map_err(|e| {
+            if e.kind() == ErrorKind::AddrInUse {
+                format!(
+                    "SSE 端口绑定失败：端口 {} 已被占用。请在【通用设置】里更换端口，或关闭占用该端口的程序。原始错误: {e}",
+                    settings.sse_port
+                )
+            } else {
+                format!("SSE 端口绑定失败: {e}")
+            }
+        })?;
 
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
