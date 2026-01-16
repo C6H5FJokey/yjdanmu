@@ -30,6 +30,8 @@ pub struct StyleProfile {
     pub guard_admiral: Option<sse_server::Config>,
     /// 舰队高亮：舰长（privilege_type=3，仅普通弹幕 type=danmu 生效）
     pub guard_captain: Option<sse_server::Config>,
+    /// 主播/本人弹幕覆盖样式（可选，仅普通弹幕 type=danmu 生效；用于视觉强调）
+    pub streamer: Option<sse_server::Config>,
     /// 房管弹幕覆盖样式（可选）
     pub moderator: Option<sse_server::Config>,
 }
@@ -43,6 +45,7 @@ impl Default for StyleProfile {
             guard_governor: None,
             guard_admiral: None,
             guard_captain: None,
+            streamer: None,
             moderator: None,
         }
     }
@@ -149,8 +152,12 @@ pub async fn apply_style_to_sse_message(mut val: serde_json::Value) -> serde_jso
 
     let mut apply_visual_overlay = |cfg: &sse_server::Config| {
         effective.font_size = cfg.font_size;
-        effective.color = cfg.color.clone();
-        effective.stroke_color = cfg.stroke_color.clone();
+        if cfg.color.is_some() {
+            effective.color = cfg.color.clone();
+        }
+        if cfg.stroke_color.is_some() {
+            effective.stroke_color = cfg.stroke_color.clone();
+        }
         effective.stroke_width = cfg.stroke_width;
     };
 
@@ -191,6 +198,17 @@ pub async fn apply_style_to_sse_message(mut val: serde_json::Value) -> serde_jso
             _ => {}
         }
 
+        let is_streamer = obj
+            .get("isStreamer")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if is_streamer {
+            if let Some(cfg) = profile.streamer.as_ref() {
+                // 主播/本人：同样只做视觉强调覆盖
+                apply_visual_overlay(cfg);
+            }
+        }
+
         let is_moderator = obj
             .get("isModerator")
             .and_then(|v| v.as_bool())
@@ -208,10 +226,23 @@ pub async fn apply_style_to_sse_message(mut val: serde_json::Value) -> serde_jso
         "fontSize".to_string(),
         serde_json::Value::Number(serde_json::Number::from(effective.font_size)),
     );
-    obj.insert("color".to_string(), serde_json::Value::String(effective.color.clone()));
+    // 如果样式配置里 color/strokeColor 为 null，则回退到 websocket 原始颜色（消息里的 color）。
+    let ws_color = obj
+        .get("color")
+        .and_then(|v| v.as_str())
+        .unwrap_or("#ffffff")
+        .to_string();
+
+    let final_color = effective.color.clone().unwrap_or_else(|| ws_color.clone());
+    let final_stroke_color = effective
+        .stroke_color
+        .clone()
+        .unwrap_or_else(|| ws_color.clone());
+
+    obj.insert("color".to_string(), serde_json::Value::String(final_color));
     obj.insert(
         "strokeColor".to_string(),
-        serde_json::Value::String(effective.stroke_color.clone()),
+        serde_json::Value::String(final_stroke_color),
     );
     obj.insert(
         "strokeWidth".to_string(),
@@ -333,9 +364,9 @@ impl Default for GeneralSettings {
 #[derive(Default)]
 struct SseRuntime {
     state: Option<Arc<sse_server::AppState>>,
-    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
-    bind_addr: Option<SocketAddr>,
-    join_handle: Option<tauri::async_runtime::JoinHandle<()>>,
+    shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    bind_addrs: Vec<SocketAddr>,
+    join_handles: Vec<tauri::async_runtime::JoinHandle<()>>,
     settings: GeneralSettings,
 }
 
@@ -367,19 +398,19 @@ pub async fn get_sse_state() -> Option<Arc<sse_server::AppState>> {
 }
 
 async fn stop_sse_server() {
-    let (shutdown, join_handle) = {
+    let (shutdown, join_handles) = {
         let mut rt = SSE_RUNTIME.write().await;
         let shutdown = rt.shutdown.take();
-        let join_handle = rt.join_handle.take();
+        let join_handles = std::mem::take(&mut rt.join_handles);
         rt.state = None;
-        rt.bind_addr = None;
-        (shutdown, join_handle)
+        rt.bind_addrs.clear();
+        (shutdown, join_handles)
     };
 
     if let Some(tx) = shutdown {
-        let _ = tx.send(());
+        let _ = tx.send(true);
     }
-    if let Some(handle) = join_handle {
+    for handle in join_handles {
         // 等待旧服务器真正退出，避免立即 bind 同端口时报 AddrInUse
         let _ = handle.await;
     }
@@ -388,16 +419,22 @@ async fn stop_sse_server() {
 async fn start_or_restart_sse_server(app_handle: tauri::AppHandle, settings: GeneralSettings) -> Result<String, String> {
     use tokio::net::TcpListener;
     use std::io::ErrorKind;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-    let bind_ip = if settings.sse_public { "0.0.0.0" } else { "127.0.0.1" };
-    let bind_addr: SocketAddr = format!("{bind_ip}:{}", settings.sse_port)
-        .parse()
-        .map_err(|e| format!("绑定地址解析失败: {e}"))?;
+    let addr_v4 = SocketAddr::new(
+        IpAddr::V4(if settings.sse_public { Ipv4Addr::UNSPECIFIED } else { Ipv4Addr::LOCALHOST }),
+        settings.sse_port,
+    );
+    let addr_v6 = SocketAddr::new(
+        IpAddr::V6(if settings.sse_public { Ipv6Addr::UNSPECIFIED } else { Ipv6Addr::LOCALHOST }),
+        settings.sse_port,
+    );
+    let want_addrs = vec![addr_v4, addr_v6];
 
     // 如果 bind_addr 没变且服务已在运行：不重启（避免“自己占用自己”）
     {
         let rt = SSE_RUNTIME.read().await;
-        if rt.bind_addr == Some(bind_addr) {
+        if rt.bind_addrs == want_addrs {
             if let Some(state) = rt.state.clone() {
                 // 热更新 token
                 *state.auth.write().await = sse_server::AuthConfig {
@@ -409,7 +446,7 @@ async fn start_or_restart_sse_server(app_handle: tauri::AppHandle, settings: Gen
 
     {
         let rt = SSE_RUNTIME.write().await;
-        if rt.bind_addr == Some(bind_addr) && rt.state.is_some() {
+        if rt.bind_addrs == want_addrs && rt.state.is_some() {
             // 应用 WS debug/过滤配置（不需要重启）
             drop(rt);
             bili_websocket_client::set_ws_debug_enabled(settings.ws_debug).await;
@@ -421,7 +458,7 @@ async fn start_or_restart_sse_server(app_handle: tauri::AppHandle, settings: Gen
 
             // 保存到磁盘
             let _ = save_general_settings(&app_handle, &settings);
-            return Ok(format!("SSE服务器已在运行: http://{}（已应用设置）", bind_addr));
+            return Ok(format!("SSE服务器已在运行: http://{}（已应用设置）", addr_v4));
         }
     }
 
@@ -441,8 +478,7 @@ async fn start_or_restart_sse_server(app_handle: tauri::AppHandle, settings: Gen
         })),
     });
 
-    let app = sse_server::create_app(state.clone());
-    let listener = TcpListener::bind(bind_addr)
+    let listener_v4 = TcpListener::bind(addr_v4)
         .await
         .map_err(|e| {
             if e.kind() == ErrorKind::AddrInUse {
@@ -455,34 +491,60 @@ async fn start_or_restart_sse_server(app_handle: tauri::AppHandle, settings: Gen
             }
         })?;
 
-    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    // IPv6 监听（用于让 localhost/::1 访问不再产生 IPv6->IPv4 回退等待）
+    // 如果系统禁用 IPv6 或绑定失败，仍然只用 IPv4 工作。
+    let listener_v6 = match TcpListener::bind(addr_v6).await {
+        Ok(l) => Some(l),
+        Err(e) => {
+            eprintln!("[SSE] IPv6 监听绑定失败（将只启用 IPv4）: {e}");
+            None
+        }
+    };
 
-    let join_handle = tauri::async_runtime::spawn(async move {
-        let server = axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                let _ = rx.await;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel::<bool>(false);
+
+    let mut join_handles: Vec<tauri::async_runtime::JoinHandle<()>> = Vec::new();
+
+    {
+        let app = sse_server::create_app(state.clone());
+        let mut rx = shutdown_rx.clone();
+        join_handles.push(tauri::async_runtime::spawn(async move {
+            let server = axum::serve(listener_v4, app).with_graceful_shutdown(async move {
+                let _ = rx.changed().await;
             });
-        let _ = server.await;
-    });
+            let _ = server.await;
+        }));
+    }
+
+    if let Some(listener_v6) = listener_v6 {
+        let app = sse_server::create_app(state.clone());
+        let mut rx = shutdown_rx.clone();
+        join_handles.push(tauri::async_runtime::spawn(async move {
+            let server = axum::serve(listener_v6, app).with_graceful_shutdown(async move {
+                let _ = rx.changed().await;
+            });
+            let _ = server.await;
+        }));
+    }
 
     {
         let mut rt = SSE_RUNTIME.write().await;
         rt.state = Some(state);
-        rt.shutdown = Some(tx);
-        rt.bind_addr = Some(bind_addr);
-        rt.join_handle = Some(join_handle);
+        rt.shutdown = Some(shutdown_tx);
+        rt.bind_addrs = want_addrs;
+        rt.join_handles = join_handles;
         rt.settings = settings.clone();
     }
 
     // 保存到磁盘
     let _ = save_general_settings(&app_handle, &settings);
-    Ok(format!("SSE服务器启动在 http://{}", bind_addr))
+    Ok(format!("SSE服务器启动在 http://{}", addr_v4))
 }
 
 #[tauri::command]
 async fn start_sse_server_cmd() -> Result<String, String> {
     let rt = SSE_RUNTIME.read().await;
-    if let Some(addr) = rt.bind_addr {
+    if let Some(addr) = rt.bind_addrs.first().copied() {
         Ok(format!("SSE服务器运行中: http://{}", addr))
     } else {
         Ok("SSE服务器未启动".to_string())
@@ -496,7 +558,7 @@ async fn get_general_settings(window: tauri::Window) -> Result<serde_json::Value
     let rt = SSE_RUNTIME.read().await;
     Ok(serde_json::json!({
         "settings": disk,
-        "runtimeBindAddr": rt.bind_addr.map(|a| a.to_string()),
+        "runtimeBindAddr": rt.bind_addrs.first().map(|a| a.to_string()),
     }))
 }
 

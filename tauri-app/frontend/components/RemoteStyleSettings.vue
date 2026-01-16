@@ -33,10 +33,16 @@
                 <el-input-number v-model="editStyle.fontSize" :min="10" :max="100" :step="2" controls-position="right" />
               </el-form-item>
               <el-form-item label="字体颜色">
-                <el-color-picker v-model="editStyle.color" />
+                <div style="display:flex; align-items:center; gap:12px;">
+                  <el-color-picker v-model="textColorPickerValue" :disabled="followTextColor" />
+                  <el-switch v-model="followTextColor" active-text="不覆盖" inactive-text="自定义" />
+                </div>
               </el-form-item>
               <el-form-item label="描边颜色">
-                <el-color-picker v-model="editStyle.strokeColor" />
+                <div style="display:flex; align-items:center; gap:12px;">
+                  <el-color-picker v-model="strokeColorPickerValue" :disabled="followStrokeColor" />
+                  <el-switch v-model="followStrokeColor" active-text="不覆盖" inactive-text="自定义" />
+                </div>
               </el-form-item>
               <el-form-item label="描边宽度">
                 <el-input-number v-model="editStyle.strokeWidth" :min="0" :max="10" :step="1" controls-position="right" />
@@ -87,10 +93,16 @@
                 <el-input-number v-model="editStyle.fontSize" :disabled="!extraEnabled" :min="10" :max="100" :step="2" controls-position="right" />
               </el-form-item>
               <el-form-item label="字体颜色">
-                <el-color-picker v-model="editStyle.color" :disabled="!extraEnabled" />
+                <div style="display:flex; align-items:center; gap:12px;">
+                  <el-color-picker v-model="textColorPickerValue" :disabled="!extraEnabled || followTextColor" />
+                  <el-switch v-model="followTextColor" :disabled="!extraEnabled" active-text="不覆盖" inactive-text="自定义" />
+                </div>
               </el-form-item>
               <el-form-item label="描边颜色">
-                <el-color-picker v-model="editStyle.strokeColor" :disabled="!extraEnabled" />
+                <div style="display:flex; align-items:center; gap:12px;">
+                  <el-color-picker v-model="strokeColorPickerValue" :disabled="!extraEnabled || followStrokeColor" />
+                  <el-switch v-model="followStrokeColor" :disabled="!extraEnabled" active-text="不覆盖" inactive-text="自定义" />
+                </div>
               </el-form-item>
               <el-form-item label="描边宽度">
                 <el-input-number v-model="editStyle.strokeWidth" :disabled="!extraEnabled" :min="0" :max="10" :step="1" controls-position="right" />
@@ -122,8 +134,8 @@
       </el-tabs>
       
       <div class="actions">
-        <el-button @click="load" :disabled="!canUseTauri">重新加载</el-button>
         <el-button @click="save" type="primary" :disabled="!canUseTauri">保存当前页</el-button>
+        <el-button @click="load" :disabled="!canUseTauri">撤销修改</el-button>
       </div>
     </el-card>
   </div>
@@ -159,10 +171,74 @@ const profile = reactive({
   guardGovernor: null,
   guardAdmiral: null,
   guardCaptain: null,
+  streamer: null,
   moderator: null
 })
 
 const editStyle = reactive({ ...profile.base })
+
+const lastTextColor = ref('#ffffff')
+const lastStrokeColor = ref('#000000')
+
+watch(
+  () => editStyle.color,
+  (v) => {
+    if (typeof v === 'string' && v) lastTextColor.value = v
+  }
+)
+
+watch(
+  () => editStyle.strokeColor,
+  (v) => {
+    if (typeof v === 'string' && v) lastStrokeColor.value = v
+  }
+)
+
+const followTextColor = computed({
+  get: () => editStyle.color === null || editStyle.color === undefined,
+  set: (v) => {
+    if (v) {
+      editStyle.color = null
+    } else {
+      if (editStyle.color === null || editStyle.color === undefined) {
+        editStyle.color = lastTextColor.value || '#ffffff'
+      }
+    }
+  }
+})
+
+const followStrokeColor = computed({
+  get: () => editStyle.strokeColor === null || editStyle.strokeColor === undefined,
+  set: (v) => {
+    if (v) {
+      editStyle.strokeColor = null
+    } else {
+      if (editStyle.strokeColor === null || editStyle.strokeColor === undefined) {
+        editStyle.strokeColor = lastStrokeColor.value || '#000000'
+      }
+    }
+  }
+})
+
+const textColorPickerValue = computed({
+  get: () => {
+    if (editStyle.color === null || editStyle.color === undefined) return lastTextColor.value
+    return editStyle.color
+  },
+  set: (v) => {
+    editStyle.color = v
+  }
+})
+
+const strokeColorPickerValue = computed({
+  get: () => {
+    if (editStyle.strokeColor === null || editStyle.strokeColor === undefined) return lastStrokeColor.value
+    return editStyle.strokeColor
+  },
+  set: (v) => {
+    editStyle.strokeColor = v
+  }
+})
 
 const extraEnabled = ref(false)
 
@@ -171,6 +247,7 @@ const overlayOptions = [
   { key: 'guardCaptain', label: '舰长' },
   { key: 'guardAdmiral', label: '提督' },
   { key: 'guardGovernor', label: '总督' },
+  { key: 'streamer', label: '主播/本人' },
   { key: 'moderator', label: '房管' }
 ]
 
@@ -251,6 +328,7 @@ const load = async () => {
     profile.guardGovernor = resp.profile.guardGovernor || null
     profile.guardAdmiral = resp.profile.guardAdmiral || null
     profile.guardCaptain = resp.profile.guardCaptain || null
+    profile.streamer = resp.profile.streamer || null
     profile.moderator = resp.profile.moderator || null
 
     refreshExtraTypeOptions()
@@ -278,6 +356,7 @@ const save = async () => {
       guardGovernor: profile.guardGovernor ? { ...profile.guardGovernor } : null,
       guardAdmiral: profile.guardAdmiral ? { ...profile.guardAdmiral } : null,
       guardCaptain: profile.guardCaptain ? { ...profile.guardCaptain } : null,
+      streamer: profile.streamer ? { ...profile.streamer } : null,
       moderator: profile.moderator ? { ...profile.moderator } : null
     }
 

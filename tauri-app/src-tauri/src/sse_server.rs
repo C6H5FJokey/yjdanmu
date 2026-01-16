@@ -66,8 +66,8 @@ pub struct Stats {
 #[serde(rename_all = "camelCase")]
 pub struct Config {
     pub font_size: u32,
-    pub color: String,
-    pub stroke_color: String,
+    pub color: Option<String>,
+    pub stroke_color: Option<String>,
     pub stroke_width: u32,
     pub typing_speed: u32,
     pub display_duration: u64,
@@ -80,8 +80,8 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             font_size: 32,
-            color: "#ffffff".to_string(),
-            stroke_color: "#000000".to_string(),
+            color: Some("#ffffff".to_string()),
+            stroke_color: Some("#000000".to_string()),
             stroke_width: 2,
             typing_speed: 100,
             display_duration: 3000,
@@ -405,7 +405,11 @@ pub async fn update_config_handler(
 
 // 内部函数：发送消息到所有连接
 pub async fn send_to_all_connections(state: &Arc<AppState>, msg: serde_json::Value) {
-    println!("[弹幕] {}", serde_json::to_string_pretty(&msg).unwrap_or_default());
+    // 注意：Windows 控制台输出（尤其是 pretty JSON）可能非常慢，会直接拖慢 /api/send-danmu 的响应。
+    // 仅在显式开启环境变量时打印，默认不打印。
+    if std::env::var("YJDANMU_SSE_DEBUG").is_ok() {
+        println!("[弹幕] {}", serde_json::to_string(&msg).unwrap_or_default());
+    }
     let connections = state.sse_connections.read().await;
     let connection_ids: Vec<String> = connections.keys().cloned().collect();
     

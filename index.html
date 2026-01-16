@@ -421,7 +421,7 @@
             }
 
             // SSE连接方法
-            connectSSE(url = 'http://localhost:8080/api/sse') {
+            connectSSE(url = '/api/sse') {
                 if (this.eventSource) {
                     this.disconnectSSE();
                 }

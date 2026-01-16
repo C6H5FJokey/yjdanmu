@@ -17,7 +17,7 @@ use tauri::{AppHandle, Emitter};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DanmuFilterConfig {
-    pub enabled: bool,
+    pub blacklist_enabled: bool,
     pub keyword_blacklist: Vec<String>,
     pub min_len: Option<u32>,
     pub max_len: Option<u32>,
@@ -32,7 +32,7 @@ pub struct DanmuFilterConfig {
 impl Default for DanmuFilterConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            blacklist_enabled: false,
             keyword_blacklist: Vec::new(),
             min_len: None,
             max_len: None,
@@ -102,7 +102,7 @@ fn make_sse_event(
         "color": color.unwrap_or_else(|| "#ffffff".to_string()),
         "size": size.unwrap_or(32),
         // 兼容字段：同样使用 Unix 毫秒时间戳
-        "time": timestamp,
+        "time": now_ms(),
         // 对齐 blivedm/web.py: timestamp 是 Unix 毫秒时间戳
         "timestamp": timestamp,
         // 仅用于展示的人类可读时间（不要当作 timestamp 使用）
@@ -112,6 +112,7 @@ fn make_sse_event(
         // 样式/过滤辅助字段（缺省由 forward_to_sse 兜底补齐）
         "hasOwnMedal": false,
         "isModerator": false,
+        "isStreamer": false,
         // 舰队等级：0非舰队, 1总督, 2提督, 3舰长（blivedm/web.py: privilege_type）
         "guardLevel": 0,
     })
@@ -143,6 +144,11 @@ fn parse_danmu_msg(root: &serde_json::Value) -> Option<serde_json::Value> {
         .pointer("/info/2/1")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+
+    // 用户 uid：用于识别“主播/本人弹幕”（比 face_url 更稳定）
+    let uid = root
+        .pointer("/info/2/0")
+        .and_then(|v| v.as_u64());
 
     let face_url = root
         .pointer("/info/0/15/user/base/face")
@@ -180,6 +186,12 @@ fn parse_danmu_msg(root: &serde_json::Value) -> Option<serde_json::Value> {
 
     let mut msg = make_sse_danmu(text, user, color, size, face_url, media_ruid, time_ms);
     if let Some(obj) = msg.as_object_mut() {
+        if let Some(uid) = uid {
+            obj.insert(
+                "uid".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(uid)),
+            );
+        }
         obj.insert("isModerator".to_string(), serde_json::Value::Bool(is_moderator));
         obj.insert(
             "guardLevel".to_string(),
@@ -644,7 +656,15 @@ fn get_text_len(text: &str) -> u32 {
 
 async fn should_forward_danmu(msg: &serde_json::Value) -> bool {
     let cfg = DANMU_FILTER.read().await.clone();
-    if !cfg.enabled {
+    // 兼容用户预期：只要开启了任一过滤条件，就应当生效。
+    // 否则很多人只会打开“仅粉丝牌/仅主播”等单项开关，却忘了总开关 enabled。
+    let effective_enabled = cfg.blacklist_enabled
+        || cfg.only_fans_medal
+        || cfg.only_streamer
+        || cfg.hide_streamer
+        || cfg.min_len.is_some()
+        || cfg.max_len.is_some();
+    if !effective_enabled {
         return true;
     }
 
@@ -653,11 +673,17 @@ async fn should_forward_danmu(msg: &serde_json::Value) -> bool {
 
     if let Some(min_len) = cfg.min_len {
         if text_len < min_len {
+            if ws_debug_enabled() {
+                eprintln!("[Filter][DEBUG] drop: text_len({text_len}) < min_len({min_len}) text={:?}", text);
+            }
             return false;
         }
     }
     if let Some(max_len) = cfg.max_len {
         if text_len > max_len {
+            if ws_debug_enabled() {
+                eprintln!("[Filter][DEBUG] drop: text_len({text_len}) > max_len({max_len}) text={:?}", text);
+            }
             return false;
         }
     }
@@ -666,6 +692,9 @@ async fn should_forward_danmu(msg: &serde_json::Value) -> bool {
         for kw in &cfg.keyword_blacklist {
             let kw = kw.trim();
             if !kw.is_empty() && text.contains(kw) {
+                if ws_debug_enabled() {
+                    eprintln!("[Filter][DEBUG] drop: keyword={:?} text={:?}", kw, text);
+                }
                 return false;
             }
         }
@@ -678,11 +707,30 @@ async fn should_forward_danmu(msg: &serde_json::Value) -> bool {
 
     if cfg.only_fans_medal {
         let Some(owner_uid) = owner_uid else {
+            if ws_debug_enabled() {
+                eprintln!("[Filter][DEBUG] drop: only_fans_medal but owner_uid is None");
+            }
             return false;
         };
         let owner_uid_str = owner_uid.to_string();
-        let media_ruid = msg.get("media_ruid").and_then(|v| v.as_str()).unwrap_or("");
-        if media_ruid != owner_uid_str {
+        // media_ruid：佩戴本房间粉丝牌时为主播 uid；未佩戴时通常为 null
+        // forward_to_sse 会尽量保持数字类型，因此这里必须兼容 number/string/null
+        let media_ruid = msg.get("media_ruid").and_then(|v| {
+            if let Some(u) = v.as_u64() {
+                Some(u.to_string())
+            } else {
+                v.as_str().map(|s| s.to_string())
+            }
+        });
+        if media_ruid.as_deref() != Some(owner_uid_str.as_str()) {
+            if ws_debug_enabled() {
+                eprintln!(
+                    "[Filter][DEBUG] drop: only_fans_medal media_ruid={:?} owner_uid={} text={:?}",
+                    media_ruid,
+                    owner_uid,
+                    text
+                );
+            }
             return false;
         }
     }
@@ -695,9 +743,15 @@ async fn should_forward_danmu(msg: &serde_json::Value) -> bool {
         let face_url = msg.get("face_url").and_then(|v| v.as_str()).unwrap_or("");
         let is_streamer = !face_url.is_empty() && face_url == owner_face;
         if cfg.only_streamer && !is_streamer {
+            if ws_debug_enabled() {
+                eprintln!("[Filter][DEBUG] drop: only_streamer face_url={:?} owner_face={:?} text={:?}", face_url, owner_face, text);
+            }
             return false;
         }
         if cfg.hide_streamer && is_streamer {
+            if ws_debug_enabled() {
+                eprintln!("[Filter][DEBUG] drop: hide_streamer text={:?}", text);
+            }
             return false;
         }
     }
@@ -1131,11 +1185,15 @@ async fn handle_command_text(text: &str) {
 
 async fn forward_to_sse(val: serde_json::Value) {
     if let Some(state) = crate::get_sse_state().await {
-        // 兜底补齐 hasOwnMedal / isModerator / guardLevel
+        // 兜底补齐 hasOwnMedal / isModerator / isStreamer / guardLevel
         let mut val = val;
         if let Some(obj) = val.as_object_mut() {
             if obj.get("isModerator").and_then(|v| v.as_bool()).is_none() {
                 obj.insert("isModerator".to_string(), serde_json::Value::Bool(false));
+            }
+
+            if obj.get("isStreamer").and_then(|v| v.as_bool()).is_none() {
+                obj.insert("isStreamer".to_string(), serde_json::Value::Bool(false));
             }
 
             if obj.get("hasOwnMedal").and_then(|v| v.as_bool()).is_none() {
@@ -1155,13 +1213,39 @@ async fn forward_to_sse(val: serde_json::Value) {
                 }
             });
 
+            let (owner_uid, owner_face) = {
+                let guard = WS_STATE.read().await;
+                (guard.room_owner_uid, guard.room_owner_face_url.clone())
+            };
+
             if let Some(media_ruid) = media_ruid {
-                let owner_uid = WS_STATE.read().await.room_owner_uid;
                 if let Some(owner_uid) = owner_uid {
                     if media_ruid == owner_uid.to_string() {
                         obj.insert("hasOwnMedal".to_string(), serde_json::Value::Bool(true));
                     }
                 }
+            }
+
+            // 主播/本人弹幕：优先用 uid 匹配，其次回退 face_url 匹配（免登录房间直连场景）
+            // 不过目前没设计登录，所以理论上 uid 匹配是没用的。
+            let mut is_streamer = false;
+            if let Some(owner_uid) = owner_uid {
+                if let Some(uid) = obj.get("uid").and_then(|v| v.as_i64()) {
+                    if uid == owner_uid {
+                        is_streamer = true;
+                    }
+                }
+            }
+            if !is_streamer {
+                let face_url = obj.get("face_url").and_then(|v| v.as_str());
+                if let (Some(face_url), Some(owner_face)) = (face_url, owner_face.as_deref()) {
+                    if !owner_face.is_empty() && face_url == owner_face {
+                        is_streamer = true;
+                    }
+                }
+            }
+            if is_streamer {
+                obj.insert("isStreamer".to_string(), serde_json::Value::Bool(true));
             }
         }
 

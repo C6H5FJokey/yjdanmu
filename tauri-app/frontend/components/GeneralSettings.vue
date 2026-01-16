@@ -14,7 +14,7 @@
         type="info"
         :closable="false"
         show-icon
-        description="这里的设置影响整个程序（SSE 服务、调试、默认重连、弹幕过滤）。修改后会自动重启 SSE 服务以应用端口/公网/token。"
+        description="sse服务相关在修改后会自动重启 SSE 服务以应用端口/公网/token。弹幕屏蔽则不会。"
       />
 
       <div class="section">
@@ -60,8 +60,8 @@
       <div class="section">
         <h3>弹幕过滤</h3>
         <el-form :model="settings.danmuFilter" label-width="140px">
-          <el-form-item label="启用过滤">
-            <el-switch v-model="settings.danmuFilter.enabled" />
+          <el-form-item label="启用关键词过滤">
+            <el-switch v-model="settings.danmuFilter.BlacklistEnabled" />
           </el-form-item>
 
           <el-form-item label="关键词黑名单">
@@ -97,8 +97,8 @@
       </div>
 
       <div class="actions">
-        <el-button type="primary" @click="apply" :disabled="!canUseTauri">应用并重启 SSE</el-button>
-        <el-button @click="reload" :disabled="!canUseTauri">重新加载</el-button>
+        <el-button type="primary" @click="apply" :disabled="!canUseTauri">应用</el-button>
+        <el-button @click="reload" :disabled="!canUseTauri">撤销修改</el-button>
       </div>
 
       <el-alert
@@ -129,7 +129,7 @@ const settings = reactive({
   defaultReconnectInterval: 3000,
   defaultMaxReconnectAttempts: 5,
   danmuFilter: {
-    enabled: false,
+    BlacklistEnabled: false,
     keywordBlacklist: [],
     minLen: null,
     maxLen: null,

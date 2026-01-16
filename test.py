@@ -15,10 +15,10 @@ def send_danmu(message):
   "fadeDuration": 1000,
   "shakeAmplitude": 2,
   "randomTilt": 10,
-  "time": time.time()
+  "time": int(time.time())
 }
     print(data)
-    r = requests.post("http://localhost:8180/api/send-danmu", json=data)
+    r = requests.post("http://localhost:8081/api/send-danmu", json=data)
     return r.status_code, r.text
     
 
@@ -42,7 +42,10 @@ danmu = [
 
 async def main():
     for message in danmu:
+        start_time = time.time()
         status_code, response_text = send_danmu(message)
+        end_time = time.time()
+        print(f"time taken: {end_time - start_time:.2f} seconds")
         print(f"Status Code: {status_code}, Response: {response_text}")
         await sleep(len(message) * 0.1 + 3)  
 
