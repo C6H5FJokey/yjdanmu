@@ -7,7 +7,7 @@
     "build": "cd src && npm run build",
     "tauri": "tauri",
     "tauri-dev": "concurrently \"cd src && npm run dev\" \"tauri dev -- --bin app\"",
-    "tauri-build": "tauri build"
+    "tauri-build": "tauri build -- --bin app"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.6",
