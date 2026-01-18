@@ -1,18 +1,16 @@
 {
-  "name": "advanced-subtitle-system-sse",
+  "name": "yjdanmu",
   "version": "1.0.0",
-  "description": "高级字幕系统，支持SSE连接",
-  "main": "server.js",
+  "description": "月计式弹幕机 - Tauri 版本",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js --dev"
-  },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.18.2"
+    "dev": "cd src && npm run dev",
+    "build": "cd src && npm run build",
+    "tauri": "tauri",
+    "tauri-dev": "concurrently \"cd src && npm run dev\" \"tauri dev -- --bin app\"",
+    "tauri-build": "tauri build"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.6",
-    "nodemon": "^3.0.1"
+    "concurrently": "^8.2.2"
   }
 }

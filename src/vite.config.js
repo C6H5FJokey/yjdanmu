@@ -8,5 +8,8 @@ export default defineConfig({
     port: 1420,
     strictPort: false,
     cors: true
+  },
+  build: {
+    outDir: '../dist'
   }
 })

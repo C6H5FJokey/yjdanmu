@@ -4,15 +4,15 @@
   "version": "0.1.0",
   "identifier": "com.yjdanmu.app",
   "build": {
-    "frontendDist": "../frontend/dist",
+    "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "echo Frontend must be started separately",
-    "beforeBuildCommand": "cd ../frontend && npm run build"
+    "beforeBuildCommand": "cd ./src && npm run build"
   },
   "app": {
     "windows": [
       {
-        "title": "yjdanmu",
+        "title": "月计式弹幕机",
         "width": 800,
         "height": 600,
         "resizable": true,

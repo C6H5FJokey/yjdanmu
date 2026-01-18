@@ -17,7 +17,7 @@ use uuid::Uuid;
 use async_stream;
 
 // 直接内置预览页，避免依赖运行时工作目录下的静态文件路径
-static PREVIEW_HTML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../frontend/public/preview.html"));
+static PREVIEW_HTML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/public/preview.html"));
 
 async fn preview_html_handler() -> Html<&'static str> {
     Html(PREVIEW_HTML)
