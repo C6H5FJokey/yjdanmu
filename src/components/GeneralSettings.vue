@@ -58,6 +58,54 @@
       </div>
 
       <div class="section">
+        <h3>预览渲染</h3>
+        <el-form :model="settings.renderSettings" label-width="140px">
+          <el-form-item label="出队间隔(ms)">
+            <el-input-number
+              v-model="settings.renderSettings.minDispatchIntervalMs"
+              :min="0"
+              :max="5000"
+              :step="10"
+              controls-position="right"
+              :disabled="settings.renderSettings.unlimitedDispatch"
+            />
+            <div class="hint">浏览器切回前台时用于平滑显示；越小越“追实时”</div>
+          </el-form-item>
+
+          <el-form-item label="无限制">
+            <el-switch v-model="settings.renderSettings.unlimitedDispatch" />
+            <div class="hint">开启后不做出队间隔限制（仍会让出事件循环）</div>
+          </el-form-item>
+
+          <el-form-item label="队列最大长度">
+            <el-input-number
+              v-model="settings.renderSettings.queueMaxLength"
+              :min="0"
+              :max="5000"
+              :step="10"
+              controls-position="right"
+            />
+            <div class="hint">超出则丢弃最旧（0 表示不限制）</div>
+          </el-form-item>
+
+          <el-form-item label="积压最大保留(ms)">
+            <el-input-number
+              v-model="settings.renderSettings.queueMaxAgeMs"
+              :min="0"
+              :max="600000"
+              :step="1000"
+              controls-position="right"
+            />
+            <div class="hint">超过则直接丢弃（0 表示不过期）</div>
+          </el-form-item>
+
+          <el-form-item label="切回前台丢弃过期">
+            <el-switch v-model="settings.renderSettings.dropOnResume" />
+          </el-form-item>
+        </el-form>
+      </div>
+
+      <div class="section">
         <h3>弹幕过滤</h3>
         <el-form :model="settings.danmuFilter" label-width="140px">
           <el-form-item label="启用关键词过滤">
@@ -128,6 +176,13 @@ const settings = reactive({
   wsDebug: false,
   defaultReconnectInterval: 3000,
   defaultMaxReconnectAttempts: 5,
+  renderSettings: {
+    minDispatchIntervalMs: 160,
+    unlimitedDispatch: false,
+    queueMaxLength: 200,
+    queueMaxAgeMs: 15000,
+    dropOnResume: true
+  },
   danmuFilter: {
     BlacklistEnabled: false,
     keywordBlacklist: [],
@@ -171,6 +226,10 @@ const reload = async () => {
     settings.wsDebug = !!s.wsDebug
     settings.defaultReconnectInterval = s.defaultReconnectInterval
     settings.defaultMaxReconnectAttempts = s.defaultMaxReconnectAttempts
+    settings.renderSettings = {
+      ...settings.renderSettings,
+      ...(s.renderSettings || {})
+    }
     settings.danmuFilter = {
       ...settings.danmuFilter,
       ...(s.danmuFilter || {})
@@ -196,6 +255,13 @@ const apply = async () => {
       wsDebug: !!settings.wsDebug,
       defaultReconnectInterval: Number(settings.defaultReconnectInterval),
       defaultMaxReconnectAttempts: Number(settings.defaultMaxReconnectAttempts),
+      renderSettings: {
+        minDispatchIntervalMs: Number(settings.renderSettings.minDispatchIntervalMs || 0),
+        unlimitedDispatch: !!settings.renderSettings.unlimitedDispatch,
+        queueMaxLength: Number(settings.renderSettings.queueMaxLength || 0),
+        queueMaxAgeMs: Number(settings.renderSettings.queueMaxAgeMs || 0),
+        dropOnResume: !!settings.renderSettings.dropOnResume
+      },
       danmuFilter: {
         ...settings.danmuFilter,
         minLen: settings.danmuFilter.minLen === null ? null : Number(settings.danmuFilter.minLen),

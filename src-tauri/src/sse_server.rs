@@ -33,6 +33,9 @@ pub struct AppState {
     // 配置
     pub config: Arc<RwLock<Config>>,
 
+    // 预览渲染设置（前端展示节流/丢弃积压等）
+    pub render: Arc<RwLock<RenderConfig>>,
+
     // 认证/通用设置
     pub auth: Arc<RwLock<AuthConfig>>,
 }
@@ -90,6 +93,66 @@ impl Default for Config {
             random_tilt: 10.0,
         }
     }
+}
+
+/// 预览渲染/队列策略：用于解决浏览器后台后回到前台“积攒弹幕瞬间爆开”的问题。
+/// 注意：这是“对用户透明”的运行时行为参数，preview.html 不应出现任何 UI。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderConfig {
+    /// 最快出队间隔(ms)。越小越“追实时”，但切回前台时更容易短时间内刷很多条。
+    #[serde(default = "default_min_dispatch_interval_ms")]
+    pub min_dispatch_interval_ms: u64,
+    /// true 时不做出队间隔限制（仍会让出事件循环）。
+    #[serde(default)]
+    pub unlimited_dispatch: bool,
+    /// 队列最大长度，超过时丢弃最旧。
+    #[serde(default = "default_queue_max_length")]
+    pub queue_max_length: u32,
+    /// 积压最大保留时间(ms)，超过直接丢弃。
+    #[serde(default = "default_queue_max_age_ms")]
+    pub queue_max_age_ms: u64,
+    /// 切回前台时，丢弃超过 queueMaxAgeMs 的积压。
+    #[serde(default = "default_drop_on_resume")]
+    pub drop_on_resume: bool,
+}
+
+fn default_min_dispatch_interval_ms() -> u64 {
+    160
+}
+
+fn default_queue_max_length() -> u32 {
+    200
+}
+
+fn default_queue_max_age_ms() -> u64 {
+    15000
+}
+
+fn default_drop_on_resume() -> bool {
+    true
+}
+
+impl Default for RenderConfig {
+    fn default() -> Self {
+        Self {
+            min_dispatch_interval_ms: default_min_dispatch_interval_ms(),
+            unlimited_dispatch: false,
+            queue_max_length: default_queue_max_length(),
+            queue_max_age_ms: default_queue_max_age_ms(),
+            drop_on_resume: default_drop_on_resume(),
+        }
+    }
+}
+
+async fn build_config_message(state: &Arc<AppState>) -> serde_json::Value {
+    let config = state.config.read().await.clone();
+    let render = state.render.read().await.clone();
+    serde_json::json!({
+        "type": "config",
+        "config": config,
+        "render": render
+    })
 }
 
 // 弹幕数据结构
@@ -241,14 +304,8 @@ pub async fn sse_handler(
         state.sse_connections.read().await.len()
     });
     
-    // 发送初始配置 (removed connection confirmation message)
-    let config = state.config.read().await.clone();
-    let config_msg = serde_json::json!({
-        "type": "config",
-        "config": config
-    });
-    
-    let _ = sender.send(config_msg);
+    // 发送初始配置（含 render 策略）
+    let _ = sender.send(build_config_message(&state).await);
 
     // Create a connection guard that will clean up when dropped
     let guard = ConnectionGuard {
@@ -383,13 +440,8 @@ pub async fn update_config_handler(
             // 更新全局配置
             *state.config.write().await = new_config.clone();
             
-            // 发送配置更新到所有连接
-            let config_msg = serde_json::json!({
-                "type": "config",
-                "config": new_config
-            });
-            
-            send_to_all_connections(&state, config_msg).await;
+            // 发送配置更新到所有连接（同时带上 render，避免前端状态分裂）
+            send_to_all_connections(&state, build_config_message(&state).await).await;
             
             return Ok(Json(serde_json::json!({
                 "success": true,

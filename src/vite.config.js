@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     port: 1420,
-    strictPort: false,
+    strictPort: true,
     cors: true
   },
   build: {

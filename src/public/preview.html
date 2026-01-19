@@ -102,11 +102,25 @@
     <div class="subtitle-container" id="subtitleContainer"></div>
     
     <script>
+        const DEBUG = new URLSearchParams(window.location.search).get('debug') === '1';
+
         class AdvancedSubtitleSystem {
             constructor() {
                 this.container = document.getElementById('subtitleContainer');
                 this.activeSubtitles = new Set();
                 this.eventSource = null;
+
+                // 渲染队列：解决浏览器后台积压，回到前台瞬间“爆开显示”
+                this.renderConfig = {
+                    minDispatchIntervalMs: 160,
+                    unlimitedDispatch: false,
+                    queueMaxLength: 200,
+                    queueMaxAgeMs: 15000,
+                    dropOnResume: true
+                };
+                this.queue = [];
+                this.isDraining = false;
+                this.lastDispatchAt = 0;
                 
                 this.defaultConfig = {
                     fontSize: 32,
@@ -128,8 +142,7 @@
 
             addSubtitle(text, customConfig = {}) {
                 const config = { ...this.defaultConfig, ...customConfig };
-                console.log('addSubtitle - config:', config);
-                console.log('addSubtitle - config.fontSize:', config.fontSize);
+                if (DEBUG) console.log('addSubtitle - config:', config);
                 
                 const subtitleElement = this.createSubtitleElement(text, config);
                 
@@ -150,14 +163,10 @@
             }
 
             createSubtitleElement(text, config) {
-                console.log('createSubtitleElement - config:', config);
-                console.log('createSubtitleElement - config.fontSize:', config.fontSize);
-                
                 const element = document.createElement('div');
                 element.className = 'subtitle-item';
                 
                 element.style.fontSize = `${config.fontSize}px`;
-                console.log('createSubtitleElement - element.style.fontSize:', element.style.fontSize);
                 
                 element.style.fontFamily = config.fontFamily;
                 element.style.color = config.textColor;
@@ -261,14 +270,76 @@
             }
 
             updateConfig(newConfig) {
-                console.log('Updating config:', newConfig);
-                console.log('Old defaultConfig:', this.defaultConfig);
-                console.log('Old defaultConfig fontSize:', this.defaultConfig.fontSize);
+                if (DEBUG) console.log('Updating config:', newConfig);
                 
                 this.defaultConfig = { ...this.defaultConfig, ...newConfig };
-                
-                console.log('New defaultConfig:', this.defaultConfig);
-                console.log('New defaultConfig fontSize:', this.defaultConfig.fontSize);
+                if (DEBUG) console.log('New defaultConfig:', this.defaultConfig);
+            }
+
+            updateRenderConfig(newRenderConfig) {
+                if (!newRenderConfig) return;
+                this.renderConfig = { ...this.renderConfig, ...newRenderConfig };
+                if (DEBUG) console.log('Updating renderConfig:', this.renderConfig);
+                // 配置变更后尝试继续 drain
+                this.drainQueue();
+            }
+
+            enqueueDanmu(text, config, meta = {}) {
+                const now = Date.now();
+                const serverTime = typeof meta.serverTime === 'number' ? meta.serverTime : now;
+                this.queue.push({ text, config, serverTime, enqueuedAt: now });
+
+                const maxLen = Number(this.renderConfig.queueMaxLength || 0);
+                    if (maxLen > 0 && this.queue.length > maxLen) {
+                    // 丢弃最旧
+                    this.queue.splice(0, this.queue.length - maxLen);
+                }
+
+                this.drainQueue();
+            }
+
+            dropExpiredInQueue() {
+                const maxAge = Number(this.renderConfig.queueMaxAgeMs || 0);
+                if (!maxAge) return;
+                const now = Date.now();
+                this.queue = this.queue.filter(item => (now - item.serverTime) <= maxAge);
+            }
+
+            async drainQueue() {
+                if (this.isDraining) return;
+                this.isDraining = true;
+                try {
+                    while (this.queue.length > 0) {
+                        if (document.visibilityState === 'hidden') {
+                            await new Promise(r => setTimeout(r, 250));
+                            continue;
+                        }
+
+                        this.dropExpiredInQueue();
+                        if (this.queue.length === 0) break;
+
+                        const unlimited = !!this.renderConfig.unlimitedDispatch;
+                        const interval = Number(this.renderConfig.minDispatchIntervalMs || 0);
+                        if (!unlimited && interval > 0) {
+                            const elapsed = Date.now() - this.lastDispatchAt;
+                            const wait = interval - elapsed;
+                            if (wait > 0) {
+                                await new Promise(r => setTimeout(r, Math.min(wait, 50)));
+                                continue;
+                            }
+                        }
+
+                        const item = this.queue.shift();
+                        if (!item) break;
+                        this.addSubtitle(item.text, item.config);
+                        this.lastDispatchAt = Date.now();
+
+                        // 让出事件循环，避免长时间占用主线程
+                        await new Promise(r => setTimeout(r, 0));
+                    }
+                } finally {
+                    this.isDraining = false;
+                }
             }
 
             clearAll() {
@@ -340,6 +411,7 @@
                         break;
                     case 'config':
                         this.updateConfig(data.config);
+                        this.updateRenderConfig(data.render);
                         break;
                     case 'ping':
                         // Ping message for connection health
@@ -354,11 +426,7 @@
             }
 
             processDanmuData(data) {
-                console.log('Processing danmu data:', data);
-                console.log('Current defaultConfig:', this.defaultConfig);
-                console.log('defaultConfig.fontSize:', this.defaultConfig.fontSize);
-                console.log('data.fontSize:', data.fontSize);
-                console.log('data.size:', data.size);
+                if (DEBUG) console.log('Processing danmu data:', data);
                 
                 const config = {
                     fontSize: data.fontSize || data.size || this.defaultConfig.fontSize,
@@ -372,11 +440,10 @@
                     shakeAmplitude: data.shakeAmplitude || data.shake_amplitude || this.defaultConfig.shakeAmplitude,
                     randomTilt: data.randomTilt || data.random_tilt || this.defaultConfig.randomTilt
                 };
-                
-                console.log('Final config used:', config);
-                console.log('Final config.fontSize:', config.fontSize);
-                
-                this.addSubtitle(data.text || data.content || data.message, config);
+
+                const text = data.text || data.content || data.message;
+                const serverTime = typeof data.time === 'number' ? data.time : Date.now();
+                this.enqueueDanmu(text, config, { serverTime });
             }
         }
 
@@ -418,18 +485,18 @@
         // 页面隐藏时不要断开连接，而是保持连接
         window.addEventListener('pagehide', function() {
             // 在页面隐藏时保持SSE连接，让浏览器处理后台连接
-            console.log('页面隐藏，保持SSE连接');
+            if (DEBUG) console.log('页面隐藏，保持SSE连接');
         });
         
         // 页面可见性变化时处理连接
         document.addEventListener('visibilitychange', function() {
             if (document.visibilityState === 'hidden') {
                 // 页面进入后台时，保持连接，不主动断开
-                console.log('页面进入后台，保持SSE连接');
+                if (DEBUG) console.log('页面进入后台，保持SSE连接');
             } else if (document.visibilityState === 'visible' && subtitleSystem) {
                 // 页面回到前台时，检查连接状态，如果断开则重新连接
                 if (!subtitleSystem.eventSource || subtitleSystem.eventSource.readyState === EventSource.CLOSED) {
-                    console.log('页面回到前台，重新连接SSE');
+                    if (DEBUG) console.log('页面回到前台，重新连接SSE');
                     const params = new URLSearchParams(window.location.search);
                     const queryToken = params.get('token');
                     let token = queryToken;
@@ -443,8 +510,14 @@
                     const sseUrl = token ? `/api/sse?token=${encodeURIComponent(token)}` : '/api/sse';
                     subtitleSystem.connectSSE(sseUrl);
                 } else {
-                    console.log('页面回到前台，SSE连接正常');
+                    if (DEBUG) console.log('页面回到前台，SSE连接正常');
                 }
+
+                // 切回前台：可选丢弃过期积压，并继续 drain
+                if (subtitleSystem.renderConfig?.dropOnResume) {
+                    subtitleSystem.dropExpiredInQueue();
+                }
+                subtitleSystem.drainQueue();
             }
         });
 

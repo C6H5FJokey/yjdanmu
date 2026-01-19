@@ -345,6 +345,8 @@ pub struct GeneralSettings {
     pub default_reconnect_interval: u64,
     pub default_max_reconnect_attempts: u32,
     pub danmu_filter: bili_websocket_client::DanmuFilterConfig,
+    #[serde(default)]
+    pub render_settings: sse_server::RenderConfig,
 }
 
 impl Default for GeneralSettings {
@@ -357,6 +359,7 @@ impl Default for GeneralSettings {
             default_reconnect_interval: 3000,
             default_max_reconnect_attempts: 5,
             danmu_filter: bili_websocket_client::DanmuFilterConfig::default(),
+            render_settings: sse_server::RenderConfig::default(),
         }
     }
 }
@@ -440,6 +443,18 @@ async fn start_or_restart_sse_server(app_handle: tauri::AppHandle, settings: Gen
                 *state.auth.write().await = sse_server::AuthConfig {
                     token: settings.sse_token.clone(),
                 };
+
+                // 热更新 render 设置（无需重启）
+                *state.render.write().await = settings.render_settings.clone();
+
+                // 广播一次 config（让已打开的 preview 立即生效）
+                let config = state.config.read().await.clone();
+                let render = state.render.read().await.clone();
+                sse_server::send_to_all_connections(
+                    &state,
+                    serde_json::json!({"type": "config", "config": config, "render": render}),
+                )
+                .await;
             }
         }
     }
@@ -473,6 +488,7 @@ async fn start_or_restart_sse_server(app_handle: tauri::AppHandle, settings: Gen
         sse_connections: Arc::new(RwLock::new(std::collections::HashMap::new())),
         stats: Arc::new(RwLock::new(sse_server::Stats::default())),
         config: Arc::new(RwLock::new(sse_server::Config::default())),
+        render: Arc::new(RwLock::new(settings.render_settings.clone())),
         auth: Arc::new(RwLock::new(sse_server::AuthConfig {
             token: settings.sse_token.clone(),
         })),
@@ -641,9 +657,11 @@ async fn send_config(config: sse_server::Config) -> Result<String, String> {
         *state.config.write().await = config.clone();
         
         // 发送配置更新到所有连接
+        let render = state.render.read().await.clone();
         let config_msg = serde_json::json!({
             "type": "config",
-            "config": config
+            "config": config,
+            "render": render
         });
         
         sse_server::send_to_all_connections(&state, config_msg).await;

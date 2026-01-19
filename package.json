@@ -3,14 +3,23 @@
   "version": "1.0.0",
   "description": "月计式弹幕机 - Tauri 版本",
   "scripts": {
-    "dev": "cd src && npm run dev",
-    "build": "cd src && npm run build",
+    "dev": "vite src --config src/vite.config.js",
+    "build": "vite build src --config src/vite.config.js",
+    "preview": "vite preview src --config src/vite.config.js",
     "tauri": "tauri",
-    "tauri-dev": "concurrently \"cd src && npm run dev\" \"tauri dev -- --bin app\"",
+    "tauri-dev": "concurrently \"npm run dev\" \"tauri dev -- --bin app\"",
     "tauri-build": "tauri build --no-bundle -- --bin app "
+  },
+  "dependencies": {
+    "vue": "^3.5.12",
+    "element-plus": "^2.8.8",
+    "@element-plus/icons-vue": "^2.3.1",
+    "@tauri-apps/api": "^2.2.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.6",
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.0.1"
   }
 }
